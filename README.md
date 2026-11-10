@@ -359,10 +359,5 @@ When you open an issue, please include:
 
 ---
 
-## License and disclaimer
-
-> Draft only. Review required by Legal, Compliance, or relevant Omnissa control owner.
-
-License: _to be chosen before publication._
 
 This script is provided as is, without warranty. It is a diagnostic aid; its findings are automated checks and must be confirmed against the raw evidence. Run it on systems you are authorized to inspect, and handle the output according to your organization's data-handling policy.
