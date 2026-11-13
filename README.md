@@ -28,6 +28,7 @@ The current version is **3.0.0**. The version is in the script's file name and o
 - [Privacy, security and what it changes](#privacy-security-and-what-it-changes)
 - [Exit codes](#exit-codes)
 - [Compatibility, validation and limitations](#compatibility-validation-and-limitations)
+- [FAQ](#faq)
 - [Troubleshooting the script](#troubleshooting-the-script)
 - [Versioning and file naming](#versioning-and-file-naming)
 - [Reporting issues](#reporting-issues)
@@ -58,7 +59,7 @@ The checks are automated greps and probes. They are a starting point, **not a ve
 | macOS | 26 or 27 (the script warns on other versions). |
 | Shell | `zsh`, which ships with macOS. No third-party dependencies: it uses only tools built into macOS. |
 | Privileges | **Run as root** (`sudo`), because `sysdiagnose` requires it. Even `--dry-run` needs `sudo`. |
-| Full Disk Access | The **terminal app** you run it from needs Full Disk Access. If it does not have it, the script stops with instructions before collecting anything. |
+| Full Disk Access | The **terminal app** you run it from needs Full Disk Access. If it does not have it, the script stops with instructions before collecting anything. See [why](#why-does-the-terminal-app-need-full-disk-access). |
 | A logged-in user | A user at the desktop (the "console user") is needed for the user-context checks, the Safari tests and the Kerberos web test. Without one, those checks are skipped. |
 | MDM-managed Mac | PSSO is delivered by MDM, so the Mac is expected to be enrolled. |
 | Network | Outbound HTTPS to Apple's AASA CDN, the identity provider endpoints and any URLs you test, and UDP 123 to `time.apple.com` for the clock check. |
@@ -386,12 +387,45 @@ The probes use `curl` and do not use the system proxy configuration.
 
 ---
 
+## FAQ
+
+### Why does the terminal app need Full Disk Access?
+
+**Short answer.** Platform SSO failures are usually explained in files that macOS protects from every process, including `sudo` and root, unless the app that launched them has Full Disk Access. The script cannot read those files without it, so it stops before collecting anything.
+
+**Why it is needed**
+
+- macOS applies its privacy protections (TCC) to the app a command was started from. Running the script with `sudo` from Terminal does not bypass them.
+- The script reads locations in that protected category:
+  - the Company Portal SSO extension's logs, in its app container (`~/Library/Containers/com.microsoft.CompanyPortalMac.ssoextension/...`)
+  - Okta Verify's logs, in its group container
+  - the system privacy database, which the script uses to test whether the permission was granted
+- Those logs are the most useful evidence. When registration fails, macOS records the reason as `<private>` in the unified log. The extension's own log is where the real reason appears, for example `-51116 ... redirected to a non-https url`.
+- macOS gives a script no way to request this permission. A person has to switch it on in System Settings.
+
+**What happens without it**
+
+- Earlier versions of the script ran anyway. They silently skipped those logs and produced a bundle that said "registration failed" without saying why, so support had to ask for a second run.
+- The script now checks first. If the permission is missing it prints the steps to grant it and exits with status `3`. It collects nothing, changes nothing on the Mac, and does not start the several-minute `sysdiagnose`.
+- Granting the permission requires restarting the terminal app anyway, so stopping at the start avoids a wasted run.
+- Stopping is a design choice, not a macOS limit. The script could continue without the permission, but the result would be incomplete in exactly the way that matters most.
+
+**What the permission does and does not do**
+
+- It is granted to the terminal app, not to the script. The script is read-only apart from `sysdiagnose` and the `hubcli` archive.
+- Nothing leaves the Mac. Everything goes into one zip that the administrator controls. See [Privacy, security and what it changes](#privacy-security-and-what-it-changes).
+- The permission can be switched off afterwards: System Settings > Privacy & Security > Full Disk Access.
+- While it is on, anything run in that terminal can read protected data. Grant it only on the Mac being diagnosed, and turn it off when you are finished.
+- On managed Macs, an MDM privacy preferences (PPPC) profile can grant the permission to the terminal app. Review it with your security team before use.
+
+---
+
 ## Troubleshooting the script
 
 | Symptom | What to do |
 |---|---|
 | `This script must run as root` | Re-run with `sudo`. |
-| `FULL DISK ACCESS IS REQUIRED` | Follow [Granting Full Disk Access](#granting-full-disk-access), then fully quit and reopen the terminal. |
+| `FULL DISK ACCESS IS REQUIRED` | Follow [Granting Full Disk Access](#granting-full-disk-access), then fully quit and reopen the terminal. Not sure why it is needed? See the [FAQ](#why-does-the-terminal-app-need-full-disk-access). |
 | `sysdiagnose already in flight` | The script waits and retries automatically. If it still fails, wait for the other sysdiagnose to finish and re-run, or use `--skip-sysdiagnose`. |
 | `Bad --log-window` | Use a number plus `s`, `m`, `h` or `d`, for example `90m` or `6h`. |
 | `The output folder is not writable` | Choose another folder with `--output-dir`. |
