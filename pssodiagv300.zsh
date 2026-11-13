@@ -1916,8 +1916,8 @@ capture_user "$D2/app-sso-listrealms.txt"      app-sso -l
 flag_cli_errors "$D2/app-sso-listrealms.txt" "app-sso -l"
 capture_user "$D2/app-sso-help.txt"            app-sso --help
 capture_user "$D2/pluginkit-all.txt"           pluginkit -m
-capture_user "$D2/pluginkit-auto-service-extension.txt" \
-             /bin/zsh -c 'pluginkit -m | grep -i auto-service-extension'
+capture_user "$D2/pluginkit-auth-service-extension.txt" \
+             /bin/zsh -c 'pluginkit -m | grep -i auth-service-extension'
 capture "$D2/local-accounts-list.txt" /usr/bin/dscl . -list /Users UniqueID
 capture_user "$D2/pluginkit-sso-related.txt" \
              /bin/zsh -c 'pluginkit -m | grep -iE "ssoextension|PlatformSSO|AppSSO"'
@@ -2309,8 +2309,8 @@ log "== quick findings"
   username_findings
   print ""
 
-  PK=$(/usr/bin/grep -v '^#' "$D2/pluginkit-auto-service-extension.txt" 2>/dev/null | /usr/bin/grep -c .)
-  print "[pluginkit] lines matching 'auto-service-extension': ${PK:-0}"
+  PK=$(/usr/bin/grep -v '^#' "$D2/pluginkit-auth-service-extension.txt" 2>/dev/null | /usr/bin/grep -c .)
+  print "[pluginkit] lines matching 'auth-service-extension': ${PK:-0}"
   print "[pluginkit] SSO-related extensions:"
   /usr/bin/grep -v '^#' "$D2/pluginkit-sso-related.txt" 2>/dev/null | /usr/bin/sed 's/^/    /'
   print ""
@@ -2344,7 +2344,7 @@ log "== quick findings"
 typeset -a RENAMES; RENAMES=()
 /bin/mkdir -p "$D6/network-probes"
 for f in "$D6"/net-*; do [[ -e "$f" ]] && /bin/mv "$f" "$D6/network-probes/"; done
-number_files "$D2" app-sso-platform-state.txt app-sso-listrealms.txt local-account-dscl.txt local-account-id.txt local-accounts-list.txt local-account-psso-link.txt pluginkit-sso-related.txt pluginkit-auto-service-extension.txt pluginkit-all.txt app-sso-help.txt
+number_files "$D2" app-sso-platform-state.txt app-sso-listrealms.txt local-account-dscl.txt local-account-id.txt local-accounts-list.txt local-account-psso-link.txt pluginkit-sso-related.txt pluginkit-auth-service-extension.txt pluginkit-all.txt app-sso-help.txt
 number_files "$D3" profiles-status-enrollment.txt profiles-show-enrollment.txt profiles-list.txt profiles-show-configuration.txt profiles-show-all.txt profiles-show-all-xml.txt psso-payload-extract.txt log-show-mdm-profile-install.txt configurationprofiles-dir-listing.txt
 number_files "$D4" log-show-registration-timeline-with-tz.txt log-show-appsso-PODiagnostics.txt psso-config-seen-by-appsso.txt username-trace.txt log-show-psso-all.txt idp-extension-files
 number_files "$D5" hubcli-logs-collect.txt hubcli-archive log-show-hub.txt log-show-hub-health-with-tz.txt hubcli-help.txt hubcli-logs-help.txt airwatch-dir-listing.txt files
