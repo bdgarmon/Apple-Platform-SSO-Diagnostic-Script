@@ -1208,7 +1208,7 @@ appsso_logging_status() {   # read-only: are AppSSO debug logs persisted? (log c
 }
 
 check_psso_leftovers() {   # read-only: installed SSO payloads, leftover registration, and the PSSO link on local accounts
-  local p ext typ list="" n=0 has_psso=0 line u uid raw uidattr has_alt has_uid out con st f
+  local p ext typ list="" n=0 has_psso=0 line u uid raw uidattr uidchk has_alt has_uid out con st f
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
     n=$(( n + 1 )); ext=$(flat_val "$p" ExtensionIdentifier); typ=$(flat_val "$p" Type)
@@ -1228,7 +1228,8 @@ check_psso_leftovers() {   # read-only: installed SSO payloads, leftover registr
     [[ -z "$u" ]] && continue
     raw=$("$DSCLBIN" . -read "/Users/$u" AltSecurityIdentities 2>/dev/null)
     uidattr=$("$DSCLBIN" . -read "/Users/$u" dsAttrTypeNative:PlatformSSOUniqueIdentifier 2>/dev/null)
-    if [[ -z "$raw" && -z "$uidattr" ]]; then
+    uidchk=$("$DSCLBIN" . -read "/Users/$u" UniqueID 2>/dev/null)   # every account has a UniqueID; an attribute that is simply absent prints nothing
+    if [[ -z "$uidchk" ]]; then
       print "account ${u}: directory attributes could not be read" >> "$out"
       vcheck INFO "local-account-psso-link:${u}" "the directory attributes of this account could not be read, so the Platform SSO link was not checked"
       continue
@@ -1286,12 +1287,12 @@ kerberos_url_test() {   # one --kerberos-url: curl --negotiate as the logged-in 
 }
 
 check_kerberos() {   # gated: only when a Kerberos extension payload, a Kerberos status in the PSSO state, or --kerberos-url is present
-  local tgp tgr tgi tge p ext realm hosts nh state_rows has_state=0 has_payload=0 row r imp fail exch tg line realms="" dup r2 srv h cloud=KERBEROS.MICROSOFTONLINE.COM all_hosts idx=0 u
+  local ri ri_login ri_pw ri_site ri_net tgp tgr tgi tge p ext realm hosts nh state_rows has_state=0 has_payload=0 row r imp fail exch tg line realms="" dup r2 srv h cloud=KERBEROS.MICROSOFTONLINE.COM all_hosts idx=0 u
   /usr/bin/grep -q '"kerberosStatus"' "$S_STATE" 2>/dev/null && has_state=1
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
     ext=$(flat_val "$p" ExtensionIdentifier)
-    if [[ "$ext" == com.apple.AppSSO.KerberosExtension ]]; then
+    if [[ "$ext" == *KerberosExtension* || -n "$(flat_val "$p" Realm)" ]]; then
       has_payload=1; realm=$(flat_val "$p" Realm); nh=$(flat_list "$p" Hosts | /usr/bin/grep -c .)
       vcheck INFO kerberos-extension-config "Kerberos extension payload: Realm ${realm:-not set}, ${nh} host(s) listed"
       [[ -n "$realm" ]] && realms+="${realm}"$'\n'
@@ -1336,6 +1337,15 @@ check_kerberos() {   # gated: only when a Kerberos extension payload, a Kerberos
     while IFS= read -r r; do
       [[ -z "$r" ]] && continue
       capture_user "$D2/app-sso-realminfo-${r}.txt" app-sso -i "$r"
+      ri="$D2/app-sso-realminfo-${r}.txt"
+      ri_login=$(plist_str "$ri" login_date); ri_pw=$(plist_str "$ri" password_changed_date); ri_site=$(plist_str "$ri" site_code); ri_net=$(plist_str "$ri" networkAvailable)
+      if [[ -n "${ri_login}${ri_pw}${ri_site}${ri_net}" ]]; then
+        if [[ "$ri_net" == 0 ]]; then
+          vcheck WARN "kerberos-realm-info:${r}" "app-sso reports networkAvailable=0 for this realm (judging by the name, the Kerberos extension currently considers the network unavailable). Last Kerberos login ${ri_login:-unknown} (UTC), password last changed ${ri_pw:-unknown} (UTC), AD site ${ri_site:-none}. Compare with the kerberos-dc line."
+        else
+          vcheck INFO "kerberos-realm-info:${r}" "last Kerberos login ${ri_login:-unknown} (UTC), password last changed ${ri_pw:-unknown} (UTC), AD site ${ri_site:-none}, networkAvailable=${ri_net:-unknown}"
+        fi
+      fi
       if [[ "$(print -r -- "$r" | /usr/bin/tr '[:lower:]' '[:upper:]')" == "$cloud" ]]; then
         vcheck INFO "kerberos-dc:${r}" "cloud Kerberos realm: the ticket is issued through Microsoft Entra ID, so there is no domain controller to reach for this realm"
         continue
@@ -1372,17 +1382,32 @@ prompt_counts() {   # -> "shown responded" from the registration timeline slice
 }
 
 compute_result() {   # sets RESULT_CODE and RESULT_LINE (one plain sentence) and RESULT_WHY (one more sentence)
-  local nfail nwarn has_cfg=0 p outcome LA_TIME shown responded lastlogin
+  local nfail nwarn has_cfg=0 has_krb=0 krb_realm="" e2 r2 nkf nkw nkp nother p outcome LA_TIME shown responded lastlogin
   nfail=$(/usr/bin/grep -c '^FAIL|' "$VAL" 2>/dev/null); nwarn=$(/usr/bin/grep -c '^WARN|' "$VAL" 2>/dev/null)
   [[ -n "$EXT_ID" ]] && has_cfg=1
   while IFS= read -r p; do [[ -z "$p" ]] && continue; [[ -n "$(flat_get "$p" | /usr/bin/grep -m1 '^PlatformSSO\.')" ]] && has_cfg=1; done <<< "$(sso_prefixes)"
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    e2=$(flat_val "$p" ExtensionIdentifier); r2=$(flat_val "$p" Realm)
+    if [[ "$e2" == *KerberosExtension* || -n "$r2" ]]; then has_krb=1; krb_realm="$r2"; fi
+  done <<< "$(sso_prefixes)"
   IFS="|" read -r outcome LA_TIME <<< "$(last_attempt_outcome)"; read -r shown responded <<< "$(prompt_counts)"
   lastlogin=$(state_val lastLoginDate)
   RESULT_WHY=""
   if [[ "$REG" != true ]]; then
     if (( ! has_cfg )) && [[ -z "$UST" ]]; then
-      RESULT_CODE="NO-PSSO"; RESULT_LINE="No Platform SSO configuration was found on this Mac."
-      RESULT_WHY="There is no SSO profile with Platform SSO settings and no registration. Check that the profile is assigned and installed (System Settings > General > Device Management)."
+      if (( has_krb )); then
+        nkf=$(/usr/bin/grep -cE '^FAIL\|kerberos' "$VAL" 2>/dev/null); nkw=$(/usr/bin/grep -cE '^WARN\|kerberos' "$VAL" 2>/dev/null); nkp=$(/usr/bin/grep -cE '^PASS\|kerberos' "$VAL" 2>/dev/null)
+        nother=$(( nfail - ${nkf:-0} ))
+        RESULT_CODE="KERBEROS-ONLY"; RESULT_LINE="This Mac does not use Platform SSO. It uses the Kerberos extension (realm ${krb_realm:-not set})."
+        if (( ${nkf:-0} + ${nkw:-0} > 0 )); then RESULT_WHY="${nkf:-0} Kerberos check(s) failed and ${nkw:-0} need attention. Read the kerberos-* lines and the DIAGNOSIS."
+        elif (( ${nkp:-0} > 0 )); then RESULT_WHY="${nkp} Kerberos check(s) passed and none failed."
+        else RESULT_WHY="No Kerberos check could judge the result; see the kerberos-* lines."; fi
+        RESULT_WHY="${RESULT_WHY} The Platform SSO checks do not apply and are skipped.$( (( nother > 0 )) && print " ${nother} other check(s) failed.")"
+      else
+        RESULT_CODE="NO-PSSO"; RESULT_LINE="No Platform SSO configuration was found on this Mac."
+        RESULT_WHY="There is no SSO profile with Platform SSO settings and no registration. Check that the profile is assigned and installed (System Settings > General > Device Management)."
+      fi
     else
       RESULT_CODE="NOT-REGISTERED"; RESULT_LINE="Platform SSO is NOT registered on this Mac."
       if [[ "$outcome" == failed ]]; then RESULT_WHY="The last registration attempt (${LA_TIME}) FAILED."
@@ -1403,7 +1428,8 @@ compute_result() {   # sets RESULT_CODE and RESULT_LINE (one plain sentence) and
 }
 
 build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: what we see, what it means, what to do.
-  local n=0 nonhttps outcome LA_TIME shown responded vhas
+  local n=0 nonhttps outcome LA_TIME shown responded vhas doms d sw swv apps has_psso=0
+  psso_configured && has_psso=1
   vhas() { /usr/bin/grep -qE "^$1" "$VAL" 2>/dev/null; }
   dx() { n=$(( n + 1 )); print "  ${n}. $1"; print "       What it means: $2"; print "       What to do:    $3"; }
   nonhttps=$(/usr/bin/grep -rhs 'non-https' "$D4/idp-extension-files" 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')
@@ -1420,16 +1446,26 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
        "Ask the network team to exempt *.cdn-apple.com and *.networking.apple from TLS inspection, then register again."
   fi
   if vhas 'FAIL\|(domain-association|aasa-origin|aasa-cdn)' || /usr/bin/grep -qE '^WARN\|pair:.*DENIED' "$VAL" 2>/dev/null; then
-    dx "macOS or the domain's AASA file does not authorize the extension for at least one domain." \
+    doms=$( { /usr/bin/grep -E '^FAIL\|(domain-association|aasa-origin|aasa-cdn):' "$VAL" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^[^:]+://'; /usr/bin/grep -E '^WARN\|pair:.*DENIED' "$VAL" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^pair:[^@]*@//'; } | /usr/bin/sort -u )
+    dx "macOS or the domain's AASA file does not authorize the extension for: $(print -r -- "$doms" | /usr/bin/tr '\n' ' ' | /usr/bin/sed 's/ $//')." \
        "An extension may only act for a domain when that domain's own apple-app-site-association file lists the app. Without that, macOS refuses." \
-       "Read the domain-association, aasa and pair lines: they name the domain and say whether the profile or the domain's file is at fault. A missing profile entry can be added; a file on someone else's domain cannot be changed."
+       "See the per-domain lines below. If a domain's file lists only other apps, adding that domain to your profile cannot make this extension act for it: remove the entry, or use the extension the domain's file names. A missing profile entry can be added; a file on someone else's domain cannot be changed."
+    print "       Per domain:"
+    while IFS= read -r d; do
+      [[ -z "$d" ]] && continue
+      sw=$(/usr/bin/grep -E "^[A-Z]+\|domain-association:${d}\|" "$VAL" | /usr/bin/head -1)
+      [[ -z "$sw" ]] && sw=$(/usr/bin/grep -E "^[A-Z]+\|pair:[^|]*@${d}\|" "$VAL" | /usr/bin/head -1)
+      case "$sw" in *DENIED*) swv="denied";; *"approved for this extension"*) swv="approved";; "") swv="no entry judged";; *) swv="not approved";; esac
+      apps=$(/usr/bin/grep -E "^FAIL\|aasa-cdn:${d}\|" "$VAL" | /usr/bin/sed -nE 's/^[^|]*\|[^|]*\|authsrv lists \[([^]]*)\].*/\1/p' | /usr/bin/head -1)
+      print "         - ${d}: swcutil says ${swv}; the domain's AASA file lists: ${apps:-(not shown)}"
+    done <<< "$doms"
   fi
-  if [[ "$REG" != true ]] && (( shown > 0 && responded == 0 )); then
+  if (( has_psso )) && [[ "$REG" != true ]] && (( shown > 0 && responded == 0 )); then
     dx "${shown} registration prompt(s) were shown and none was answered." \
        "Registration only starts after the user opens the Platform SSO notification and signs in. Microsoft notes that users can swipe it away or close the dialog." \
        "Ask the user to open the notification, or to sign out and in again to bring it back, and complete the sign-in."
   fi
-  if [[ "$outcome" == failed && "$REG" != true ]] && (( ${nonhttps:-0} == 0 )); then
+  if (( has_psso )) && [[ "$outcome" == failed && "$REG" != true ]] && (( ${nonhttps:-0} == 0 )); then
     dx "The last registration attempt (${LA_TIME}) failed." \
        "macOS logs the reason as <private>. The extension's own log usually has the real reason." \
        "Read the files under 04-psso-registration-logs/idp-extension-files (Company Portal or Okta Verify logs) and the Hub logs. If AppSSO debug logging was off, run --debug-logging on, reproduce the problem, and run the script again."
@@ -1454,7 +1490,7 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
        "A registration or an account link exists without a matching profile or registration, which usually follows a profile removal." \
        "Microsoft documents deregistering in Company Portal > Preferences > Deregister; wiping the Mac is often faster. See the registration-without-profile and local-account-psso-link lines."
   fi
-  if vhas '(WARN|FAIL)\|(kerberos-status|kerberos-dc|kerberos-hosts-unique|kerberos-url|kerberos-tgt-times)'; then
+  if vhas '(WARN|FAIL)\|(kerberos-status|kerberos-dc|kerberos-hosts-unique|kerberos-url|kerberos-tgt-times|kerberos-realm-info)'; then
     dx "A Kerberos check needs attention." \
        "Kerberos tickets cannot be issued or used until the realm, the domain controller and the Hosts list are right." \
        "See the kerberos-* lines: they say whether the PSSO state, the domain controller lookup, the Hosts list or the test URL is the problem."
@@ -1469,12 +1505,36 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
        "The installed payload names a different extension or method than the one macOS loaded, or lists a URL twice." \
        "See the payload-* lines, and compare the payload settings printed further down with the vendor's documentation."
   fi
-  if [[ "$REG" != true || "$outcome" == failed ]] && /usr/bin/grep -q '^INFO|appsso-debug-logging|AppSSO debug logging is NOT persisted' "$VAL" 2>/dev/null; then
+  if (( has_psso )) && [[ "$REG" != true || "$outcome" == failed ]] && /usr/bin/grep -q '^INFO|appsso-debug-logging|AppSSO debug logging is NOT persisted' "$VAL" 2>/dev/null; then
     dx "AppSSO debug logging is not persisted on this Mac." \
        "macOS keeps debug messages only briefly unless asked to persist them, so details of an earlier attempt may be missing from the logs." \
        "Run sudo ./${SCRIPT_PATH:t} --debug-logging on, reproduce the problem, run the script again, then use --debug-logging off."
   fi
   (( n )) || print "  The automated checks found nothing to fix."
+}
+
+psso_configured() {   # true when this Mac has Platform SSO settings in an SSO payload, or any registration state
+  local p
+  { [[ -n "$(state_val registrationCompleted)" ]] || [[ -n "$(state_val state)" ]] || [[ -n "$(state_val extensionIdentifier)" ]]; } && return 0
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    [[ -n "$(flat_get "$p" | /usr/bin/grep -m1 '^PlatformSSO\.')" ]] && return 0
+  done <<< "$(sso_prefixes)"
+  return 1
+}
+
+krb_configured() {   # true when a Kerberos extension payload, or a Kerberos status in the PSSO state, is present
+  local p
+  /usr/bin/grep -q '"kerberosStatus"' "$S_STATE" 2>/dev/null && return 0
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    [[ "$(flat_val "$p" ExtensionIdentifier)" == *KerberosExtension* || -n "$(flat_val "$p" Realm)" ]] && return 0
+  done <<< "$(sso_prefixes)"
+  return 1
+}
+
+plist_str() {   # <plist file> <key> -> the <string> value that follows <key>
+  /usr/bin/awk -v k="$2" '$0 ~ "<key>" k "</key>" { getline; v = $0; gsub(/<[^>]*>/, "", v); gsub(/^[ \t]+|[ \t]+$/, "", v); print v; exit }' "$1" 2>/dev/null
 }
 
 check_apple_cdn_tls() {
@@ -1656,6 +1716,8 @@ check_payload_vs_device() {   # needs XMLP S_STATE EXT_ID TEAM_ID CONSOLE_USER D
   p_team=$(xml_values "$x" TeamIdentifier | /usr/bin/sort -u)
   if [[ -z "$p_ext" ]]; then
     vcheck SKIP payload-extension-identity "the profiles output has no Extensible SSO settings to compare"
+  elif (( ! PSSO_CFG )); then
+    vcheck SKIP payload-extension-identity "no Platform SSO configuration on this Mac: the installed SSO payload(s) are credential extensions (for example Kerberos), which macOS does not load as a Platform SSO extension"
   elif print -r -- "$p_ext" | /usr/bin/grep -qxF "$EXT_ID" && { [[ -z "$p_team" || -z "$TEAM_ID" ]] || print -r -- "$p_team" | /usr/bin/grep -qxF "$TEAM_ID"; }; then
     vcheck PASS payload-extension-identity "the payload names $EXT_ID (team ${TEAM_ID:-?}), the extension macOS loaded"
   else
@@ -1664,7 +1726,9 @@ check_payload_vs_device() {   # needs XMLP S_STATE EXT_ID TEAM_ID CONSOLE_USER D
   # 2. authentication method in the payload vs the login type the device registered with
   p_am=$(xml_nested_value "$x" PlatformSSO AuthenticationMethod)
   lt=$(state_val loginType)
-  if [[ -z "$p_am" || -z "$lt" ]]; then
+  if (( ! PSSO_CFG )); then
+    vcheck SKIP payload-auth-method "no Platform SSO configuration on this Mac, so there is no authentication method to compare"
+  elif [[ -z "$p_am" || -z "$lt" ]]; then
     vcheck SKIP payload-auth-method "payload or device login type not available"
   elif [[ "$lt" == *"$p_am"* ]]; then
     vcheck PASS payload-auth-method "payload AuthenticationMethod $p_am matches the registered login type ($lt)"
@@ -2052,22 +2116,27 @@ if [[ -z "$TEAM_ID" && -n "$EXT_ID" ]]; then   # the state reports no team until
 fi
 
 # --- on-device state
+PSSO_CFG=0; psso_configured && PSSO_CFG=1
 REG=$(state_val registrationCompleted)
-if [[ "$REG" == true ]]; then vcheck PASS device-registration "registrationCompleted = true"
+if (( ! PSSO_CFG )); then vcheck SKIP device-registration "this Mac has no Platform SSO configuration (no Platform SSO settings in an installed SSO payload and no registration state), so there is nothing to register"
+elif [[ "$REG" == true ]]; then vcheck PASS device-registration "registrationCompleted = true"
 else vcheck FAIL device-registration "registrationCompleted = ${REG:-<missing>} - Platform SSO is not registered on this Mac"; fi
 
 UST=$(state_val state)
-if [[ -z "$UST" ]]; then vcheck FAIL user-registration "no user configuration in the state - no user is registered"
+if (( ! PSSO_CFG )); then vcheck SKIP user-registration "no Platform SSO configuration on this Mac, so no user registration is expected"
+elif [[ -z "$UST" ]]; then vcheck FAIL user-registration "no user configuration in the state - no user is registered"
 elif [[ "$UST" == *Normal* ]]; then vcheck PASS user-registration "user state = $UST"
 else vcheck FAIL user-registration "user state = $UST (expected POUserStateNormal)"; fi
 
-if [[ -z "$EXT_ID" ]]; then vcheck SKIP extension-installed "no extensionIdentifier in the state (payload not applied?)"
+if [[ -z "$EXT_ID" ]] && (( ! PSSO_CFG )); then vcheck SKIP extension-installed "no Platform SSO configuration on this Mac, so no Platform SSO extension is expected"
+elif [[ -z "$EXT_ID" ]]; then vcheck SKIP extension-installed "no extensionIdentifier in the state (payload not applied?)"
 elif /usr/bin/grep -q -F "$EXT_ID" "$D2/pluginkit-all.txt" 2>/dev/null; then vcheck PASS extension-installed "$EXT_ID is registered with pluginkit"
 else vcheck FAIL extension-installed "$EXT_ID is not listed by pluginkit (host app missing or never launched?)"; fi
 
 NKEYS=0
 for k in _deviceSigningKeyData _deviceEncryptionKeyData; do /usr/bin/grep -q "\"$k\"" "$S_STATE" 2>/dev/null && NKEYS=$(( NKEYS + 1 )); done
-if (( NKEYS == 2 )); then vcheck PASS device-keys "device signing and encryption keys are present"
+if (( ! PSSO_CFG )); then vcheck SKIP device-keys "no Platform SSO configuration on this Mac, so no device keys are expected"
+elif (( NKEYS == 2 )); then vcheck PASS device-keys "device signing and encryption keys are present"
 else vcheck FAIL device-keys "only ${NKEYS} of 2 device keys are present in the state"; fi
 LT=$(state_val loginType)
 if [[ "$LT" == *SecureEnclave* ]]; then
@@ -2078,7 +2147,8 @@ fi
 
 TOK_EXP=$(/usr/bin/awk '/^Expiration:/ { getline; print; exit }' "$S_STATE" 2>/dev/null)
 if [[ -z "$TOK_EXP" ]]; then
-  if [[ "$REG" != true || -z "$UST" ]]; then vcheck SKIP sso-token "no token yet - registration is not complete"
+  if (( ! PSSO_CFG )); then vcheck SKIP sso-token "no Platform SSO configuration on this Mac, so no token is expected"
+  elif [[ "$REG" != true || -z "$UST" ]]; then vcheck SKIP sso-token "no token yet - registration is not complete"
   else vcheck WARN sso-token "no SSO token block in the state"; fi
 elif [[ "$TOK_EXP" == *"Not Expired"* ]]; then vcheck PASS sso-token "token valid until ${TOK_EXP%% *}"
 else vcheck FAIL sso-token "SSO token expired: $TOK_EXP"; fi
@@ -2092,7 +2162,7 @@ for k in nonceEndpointURL tokenEndpointURL jwksEndpointURL; do
   u=$(state_val $k); [[ -n "$u" && "$u" != "<null>" ]] && HOSTS+="$(url_host "$u")"$'\n'
 done
 HOSTS=$(print -r -- "$HOSTS" | /usr/bin/grep -v '^$' | /usr/bin/sort -u | /usr/bin/head -6)
-vcheck INFO payload-urls "URLs: $(print -r -- "$URLS" | /usr/bin/tr '\n' ' ')| authsrv associated domains: $(print -r -- "$ASSOC_HOSTS" | /usr/bin/tr '\n' ' ')"
+[[ -n "$URLS" || -n "$ASSOC_HOSTS" ]] && vcheck INFO payload-urls "URLs: $(print -r -- "$URLS" | /usr/bin/tr '\n' ' ')| authsrv associated domains: $(print -r -- "$ASSOC_HOSTS" | /usr/bin/tr '\n' ' ')"
 check_payload_vs_device
 hub_authorization_check
 
@@ -2126,11 +2196,12 @@ if /usr/bin/grep -q '"upn"' "$S_STATE" 2>/dev/null; then
   if /usr/bin/grep -q 'krbtgt' "$D6/klist.txt" 2>/dev/null; then vcheck PASS kerberos-tgt "a krbtgt ticket is in the user's cache"
   else vcheck WARN kerberos-tgt "PSSO state has a Kerberos mapping but klist shows no krbtgt ticket"; fi
 else
-  vcheck SKIP kerberos-tgt "no Kerberos mapping in the PSSO state"
+  krb_configured || vcheck SKIP kerberos-tgt "no Kerberos mapping in the PSSO state and no Kerberos extension payload"
 fi
 
 # --- network: Apple's AASA CDN, IdP endpoints, per-host associated-domain / AASA checks
-check_apple_cdn_tls
+if (( PSSO_CFG )); then check_apple_cdn_tls
+else vcheck SKIP apple-cdn-tls "Apple's AASA servers matter only for Platform SSO and its Associated Domains; this Mac has no Platform SSO configuration"; fi
 check_idp_endpoints
 while IFS= read -r h; do [[ -n "$h" ]] && check_host "$h"; done <<< "$HOSTS"
 check_association_pairs
