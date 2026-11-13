@@ -10,7 +10,7 @@ It collects the evidence an engineer or Apple/IdP support would ask for, runs a 
 
 The registration timeline, state, associated-domain, TLS and network checks are IdP-agnostic and also give useful results for other Redirect-type extensions (for example Okta Verify). A few checks are specific to the Microsoft and Hub extensions; those are marked below.
 
-The current version is **2.8.0**. The version is in the script's file name and in the first comment line of the script.
+The current version is **3.0.0**. The version is in the script's file name and in the first comment line of the script.
 
 ---
 
