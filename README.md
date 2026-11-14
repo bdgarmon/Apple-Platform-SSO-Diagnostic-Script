@@ -174,7 +174,7 @@ The script works in a temporary staging folder under `/private/var/tmp` and remo
 
 ## The output bundle
 
-The zip is named `PSSO-Diag-<hostname>-<YYYYMMDD-HHMMSS>-<RESULT>.zip`, where `<RESULT>` is one of `REGISTERED`, `REGISTERED-WITH-FAILURES`, `DEVICE-ONLY`, `NOT-REGISTERED` or `NO-PSSO`. It contains one folder with this layout:
+The zip is named `PSSO-Diag-<hostname>-<YYYYMMDD-HHMMSS>-<RESULT>.zip`, where `<RESULT>` is one of `REGISTERED`, `REGISTERED-WITH-FAILURES`, `DEVICE-ONLY`, `NOT-REGISTERED`, `KERBEROS-ONLY` or `NO-PSSO`. It contains one folder with this layout:
 
 ```text
 PSSO-Diag-<host>-<timestamp>/
@@ -213,7 +213,8 @@ RESULT: Platform SSO is NOT registered on this Mac.
 | `REGISTERED-WITH-FAILURES` | Registered, but at least one check failed. Read the FAIL lines. |
 | `DEVICE-ONLY` | The Mac is registered but the user is not. |
 | `NOT-REGISTERED` | No registration. The second line says why: a failed attempt, a prompt nobody answered, or no attempt in the log window. |
-| `NO-PSSO` | No Platform SSO configuration was found on this Mac. |
+| `KERBEROS-ONLY` | The Mac does not use Platform SSO but has the Kerberos extension configured (for example an AD-bound Mac). The second line says whether the Kerberos checks passed. The Platform SSO checks are skipped. |
+| `NO-PSSO` | No Platform SSO configuration, and no Kerberos extension, was found on this Mac. |
 
 Then come the validation summary, the DIAGNOSIS section and the full list of checks (generic example):
 
@@ -253,7 +254,7 @@ Everything printed at the end of the run is also in the bundle: the `RESULT:` li
 Every check has a stable name (shown in `code` below), and the raw evidence is in `06-validation/` or the folder named in the check.
 
 **Registration state**
-- `device-registration`, `user-registration`, `device-keys`, `user-secure-enclave-key`, `sso-token`: registration completed, user state, key presence, token validity. When nothing is registered yet, dependent checks are skipped instead of repeating the failure.
+- `device-registration`, `user-registration`, `device-keys`, `user-secure-enclave-key`, `sso-token`: registration completed, user state, key presence, token validity. When nothing is registered yet, dependent checks are skipped instead of repeating the failure. On a Mac that has **no Platform SSO configuration at all** (for example one that only uses the Kerberos extension) these checks, and `payload-extension-identity`, are skipped and the result is `KERBEROS-ONLY` or `NO-PSSO`.
 - `extension-installed`, `extension-team`: the extension is registered with `pluginkit`; when macOS reports no team ID (normal before registration completes) the team is taken from the SSO payload.
 - A registration timeline in UTC: prompts shown and answered, device configuration created, registration finished with `success=0/1`.
 
@@ -268,9 +269,10 @@ Every check has a stable name (shown in `code` below), and the raw evidence is i
 - `domain-association:*`: for each host, what `swcutil` decided for the extension. A missing payload entry is only a problem when macOS has no approval either, because some apps (for example Company Portal) carry their domains inside the app.
 - `aasa-origin:*`, `aasa-cdn:*`, `aasa-cdn-vs-origin:*`: the domain's `apple-app-site-association` file, at its origin and as Apple's CDN serves it, lists the extension, and whether the two copies differ (Apple's CDN caches for hours).
 - `pair:APP@DOMAIN`, `association-pairs`: every app and domain pair in the Associated Domains payload judged individually (the `swcutil` verdict plus whether the domain's file lists that app), with a count of how many pairs were judged where.
+- `payload-foreign-domain:*`: one finding when your profile lists, for this extension, a domain that belongs to **another vendor** (for example Microsoft's sign-in domain in a Hub profile). That domain's AASA file lists only the other vendor's apps and macOS denied this extension for it, so the entry cannot work. It replaces the separate `domain-association`, `aasa-origin` and `aasa-cdn` failures for that domain and says what to remove. It applies only to domains listed in this extension's own profile, so a domain that another SSO payload lists is judged as before.
 
 **Network path**
-- `apple-cdn-tls:*`: flags TLS inspection of Apple's two AASA hosts, which Microsoft documents as unsupported.
+- `apple-cdn-tls:*`: flags TLS inspection of Apple's two AASA hosts, which Microsoft documents as unsupported. Skipped on a Mac with no Platform SSO configuration, where those servers do not matter.
 - `idp-jwks`, `idp-nonce`, `idp-token`: the identity provider endpoints named in the PSSO state respond. The nonce request is Apple's documented server-nonce request and sends **no credentials**.
 - `clock-skew`: offset against `time.apple.com`.
 - `network-agents`, `network-agent:*`, `network-filter-profiles`: which web-filter, VPN and proxy agents are running (Netskope, Zscaler, GlobalProtect, CrowdStrike, Microsoft Defender, Cisco, Forcepoint, Cloudflare WARP, iboss), when their processes started relative to the last registration attempt, and which installed profiles carry content-filter, VPN, DNS-proxy, relay or global-proxy payloads.
@@ -290,6 +292,7 @@ Every check has a stable name (shown in `code` below), and the raw evidence is i
 **Kerberos** *(when a Kerberos extension payload, a Kerberos status in the PSSO state, or `--kerberos-url` is present)*
 - `kerberos-status:<realm>`: the import and connection status the PSSO state reports per realm.
 - `kerberos-tgt`, `kerberos-tgt-times`, `kerberos-realms`, `kerberos-dc:<realm>`: the logged-in user's TGTs, the configured realms, and for AD realms the DNS SRV lookup and TCP 88 reachability of a domain controller. The cloud realm `KERBEROS.MICROSOFTONLINE.COM` has no domain controller to reach.
+- `kerberos-realm-info:<realm>`: the useful fields from `app-sso -i <realm>`: the last Kerberos login, when the password was last changed, the AD site, and whether the extension reports the network as available. It warns when `networkAvailable` is 0. It is not run for the cloud realm `KERBEROS.MICROSOFTONLINE.COM`, which is issued through Entra and is not a Kerberos extension realm, so `app-sso -i` has nothing to report for it.
 - `kerberos-hosts-unique`, `kerberos-extension-config`: Apple requires every `Hosts` entry to be unique across all installed Extensible SSO payloads.
 - `kerberos-url:*` (`--kerberos-url`): `curl --negotiate` as the user, then a check for the `HTTP/<host>` service ticket.
 
