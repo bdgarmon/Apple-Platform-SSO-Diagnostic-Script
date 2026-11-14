@@ -664,8 +664,35 @@ swc_authsrv_rows() {   # <swcutil show output> -> domain|appid|approval|lastchec
   ' "$1" 2>/dev/null
 }
 
-check_host() {   # check_host <host>   (needs ASSOC_HOSTS, D6, TEAM_ID, EXT_ID, UNRESOLVED_HOSTS)
+CH_HELD=""
+ch_hold() { CH_HELD+="$1|$2|$3"$'\n'; }   # check_host holds its per-host lines until it knows whether they are one consolidated finding
+
+ext_payload_url_hosts() {   # hosts of the URLs listed by the SSO payload(s) whose extension is the active one
+  local p u
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    [[ "$(flat_val "$p" ExtensionIdentifier)" == "$EXT_ID" ]] || continue
+    while IFS= read -r u; do [[ -n "$u" ]] && url_host "$u"; done <<< "$(flat_list "$p" URLs)"
+  done <<< "$(sso_prefixes)"
+}
+
+aasa_vendor() {   # <space-separated app ids an AASA file lists> -> the vendor they belong to
+  case "$1" in
+    *com.microsoft.*) print "Microsoft" ;;
+    *com.okta.*) print "Okta" ;;
+    *com.ws1.*|*com.vmware.*|*com.airwatch.*|*com.omnissa.*) print "Omnissa" ;;
+    *) print "another vendor" ;;
+  esac
+}
+
+aasa_lists_ext_bundle() {   # true when an app in the list has this extension's bundle (only the team differs)
+  print -r -- "$1" | /usr/bin/awk -v ext="$EXT_ID" '{ for (i = 1; i <= NF; i++) { n = index($i, "."); b = substr($i, n + 1); if (ext == b || index(ext, b ".") == 1) f = 1 } } END { exit f ? 0 : 1 }'
+}
+
+check_host() {   # check_host <host>   (needs ASSOC_HOSTS, EXT_URL_HOSTS, EXT_ASSOC_HOSTS, D6, TEAM_ID, EXT_ID, UNRESOLVED_HOSTS)
   local h="$1" safe v rows mine first o_code o_body o_ok=0 c_ok=0 cdn_body has_payload=0 note
+  local swp sw_state="" sw_first="" o_v="" c_v="" o_list="" c_list="" own_urls=0 own_assoc=0 list="" src="" vtxt="" swtxt="" where="" fixwhere="" msg="" fk=0 st nm det
+  CH_HELD=""
   safe="${h//[^A-Za-z0-9.-]/_}"
   # 0. some payload URLs are bare domain prefixes, not web hosts - nothing to associate or fetch
   http_probe "aasa-origin-$safe" GET "https://$h/.well-known/apple-app-site-association" --max-redirs 0
@@ -683,42 +710,80 @@ check_host() {   # check_host <host>   (needs ASSOC_HOSTS, D6, TEAM_ID, EXT_ID, 
     mine=$(print -r -- "$rows" | /usr/bin/awk -F'|' -v team="$TEAM_ID" -v ext="$EXT_ID" 'NF { n=index($2,"."); t=substr($2,1,n-1); b=substr($2,n+1); if (team=="" || (t==team && (ext==b || index(ext, b ".")==1))) print }')
     first=$(print -r -- "$mine" | /usr/bin/head -1)
     if print -r -- "$mine" | /usr/bin/grep -q '|approved|'; then
+      sw_state=approved
       if (( has_payload )); then note="also listed in the Associated Domains payload"; else note="the association is built into the app, so no payload entry is needed"; fi
-      vcheck PASS "domain-association:$h" "swcutil: authsrv approved for this extension ($first) - $note"
+      ch_hold PASS "domain-association:$h" "swcutil: authsrv approved for this extension ($first) - $note"
     elif print -r -- "$mine" | /usr/bin/grep -q '|denied|'; then
-      vcheck FAIL "domain-association:$h" "swcutil: authsrv DENIED for this extension ($first)"
+      sw_state=denied; sw_first="$first"
+      ch_hold FAIL "domain-association:$h" "swcutil: authsrv DENIED for this extension ($first)"
     elif [[ -n "$mine" ]]; then
-      vcheck WARN "domain-association:$h" "swcutil: authsrv present but not yet approved ($first)"
+      sw_state=notyet; sw_first="$first"
+      ch_hold WARN "domain-association:$h" "swcutil: authsrv present but not yet approved ($first)"
     elif [[ -n "$rows" ]]; then
-      vcheck FAIL "domain-association:$h" "swcutil lists authsrv entries for $h only for OTHER apps ($(print -r -- "$rows" | /usr/bin/awk -F'|' '{ printf "%s ", $2 }')), none for this extension (team ${TEAM_ID:-?}, bundle ${EXT_ID:-?})"
+      sw_state=other
+      ch_hold FAIL "domain-association:$h" "swcutil lists authsrv entries for $h only for OTHER apps ($(print -r -- "$rows" | /usr/bin/awk -F'|' '{ printf "%s ", $2 }')), none for this extension (team ${TEAM_ID:-?}, bundle ${EXT_ID:-?})"
     elif (( has_payload )); then
-      vcheck WARN "domain-association:$h" "authsrv:$h is in the Associated Domains payload but swcutil has no entry for it yet"
+      sw_state=none
+      ch_hold WARN "domain-association:$h" "authsrv:$h is in the Associated Domains payload but swcutil has no entry for it yet"
     else
-      vcheck FAIL "domain-association:$h" "no Associated Domains payload entry and no swcutil authsrv entry for $h - macOS will not let this extension act for the domain"
+      sw_state=none
+      ch_hold FAIL "domain-association:$h" "no Associated Domains payload entry and no swcutil authsrv entry for $h - macOS will not let this extension act for the domain"
     fi
   elif (( has_payload )); then
-    vcheck INFO "domain-association:$h" "authsrv:$h is in the Associated Domains payload (swcutil was not available to confirm approval)"
+    sw_state=unavailable
+    ch_hold INFO "domain-association:$h" "authsrv:$h is in the Associated Domains payload (swcutil was not available to confirm approval)"
   else
-    vcheck WARN "domain-association:$h" "no Associated Domains payload entry and swcutil was not available - association not verified"
+    sw_state=unavailable
+    ch_hold WARN "domain-association:$h" "no Associated Domains payload entry and swcutil was not available - association not verified"
   fi
   # 2. AASA at the origin (no redirects allowed)
   if [[ "$o_code" == 200 ]]; then
-    v=$(aasa_verdict "$o_body"); vcheck "${v%%|*}" "aasa-origin:$h" "${v#*|}"
-    [[ "${v%%|*}" == PASS ]] && o_ok=1
+    v=$(aasa_verdict "$o_body"); o_v="${v%%|*}"; ch_hold "$o_v" "aasa-origin:$h" "${v#*|}"
+    [[ "$o_v" == PASS ]] && o_ok=1
+    [[ "$o_v" == FAIL ]] && o_list=$(aasa_authsrv_apps "$o_body" | /usr/bin/tr '\n' ' ')
   else
-    vcheck FAIL "aasa-origin:$h" "HTTP ${o_code} (curl rc=$HP_RC) for https://$h/.well-known/apple-app-site-association (must be HTTP 200, no redirect)"
+    ch_hold FAIL "aasa-origin:$h" "HTTP ${o_code} (curl rc=$HP_RC) for https://$h/.well-known/apple-app-site-association (must be HTTP 200, no redirect)"
   fi
   # 3. AASA as Apple's CDN serves it (what devices use)
   http_probe "aasa-cdn-$safe" GET "https://app-site-association.cdn-apple.com/a/v1/$h"
   cdn_body="$HP_BODY"
   if [[ "$HP_CODE" == 200 ]]; then
-    v=$(aasa_verdict "$cdn_body"); vcheck "${v%%|*}" "aasa-cdn:$h" "${v#*|}"
-    [[ "${v%%|*}" == PASS ]] && c_ok=1
+    v=$(aasa_verdict "$cdn_body"); c_v="${v%%|*}"; ch_hold "$c_v" "aasa-cdn:$h" "${v#*|}"
+    [[ "$c_v" == PASS ]] && c_ok=1
+    [[ "$c_v" == FAIL ]] && c_list=$(aasa_authsrv_apps "$cdn_body" | /usr/bin/tr '\n' ' ')
     if (( o_ok )) && [[ "$(/usr/bin/tr -d ' \n\r\t' < "$o_body" | /usr/bin/shasum)" != "$(/usr/bin/tr -d ' \n\r\t' < "$cdn_body" | /usr/bin/shasum)" ]]; then
-      vcheck WARN "aasa-cdn-vs-origin:$h" "the Apple CDN copy differs from the origin file (CDN caches for hours: Cache-Control max-age=21600 observed)"
+      ch_hold WARN "aasa-cdn-vs-origin:$h" "the Apple CDN copy differs from the origin file (CDN caches for hours: Cache-Control max-age=21600 observed)"
     fi
   else
-    vcheck FAIL "aasa-cdn:$h" "Apple CDN returned HTTP ${HP_CODE} (curl rc=$HP_RC) for https://app-site-association.cdn-apple.com/a/v1/$h - devices cannot validate the extension for this domain"
+    ch_hold FAIL "aasa-cdn:$h" "Apple CDN returned HTTP ${HP_CODE} (curl rc=$HP_RC) for https://app-site-association.cdn-apple.com/a/v1/$h - devices cannot validate the extension for this domain"
+  fi
+  # 4. one consolidated finding when this extension's own profile lists a domain that belongs to another vendor
+  print -r -- "$EXT_URL_HOSTS" | /usr/bin/grep -qxF "$h" && own_urls=1
+  print -r -- "$EXT_ASSOC_HOSTS" | /usr/bin/grep -qxF "$h" && own_assoc=1
+  list="${c_list:-$o_list}"
+  if [[ -n "$EXT_ID" && "$sw_state" != approved && "$o_v" != PASS && "$c_v" != PASS && -n "${list// /}" ]] && (( own_urls || own_assoc )) && ! aasa_lists_ext_bundle "$list"; then fk=1; fi
+  if (( fk )); then
+    vtxt=$(aasa_vendor "$list")
+    where=""; (( own_urls )) && where="URLs"; (( own_assoc )) && where+="${where:+ and }Associated Domains"
+    if (( own_urls && own_assoc )); then fixwhere="both the URLs list and the Associated Domains payload"; elif (( own_urls )); then fixwhere="the URLs list"; else fixwhere="the Associated Domains payload"; fi
+    src=""; [[ "$o_v" == FAIL && -n "${o_list// /}" ]] && src="the file at its origin"
+    [[ "$c_v" == FAIL && -n "${c_list// /}" ]] && src+="${src:+ and }Apple's CDN copy"
+    swp=$(print -r -- "$sw_first" | /usr/bin/awk -F'|' '{ printf "%s, last checked %s", $3, $4 }')
+    case "$sw_state" in
+      denied) swtxt="macOS denied this extension for it (swcutil: ${swp})" ;;
+      other) swtxt="macOS (swcutil) has entries for it only for other apps" ;;
+      notyet) swtxt="macOS has not approved it (swcutil: ${swp})" ;;
+      unavailable) swtxt="swcutil was not available to confirm macOS's decision" ;;
+      *) swtxt="macOS (swcutil) has no approval for this extension" ;;
+    esac
+    msg="the profile lists ${h} for this extension (in ${where}), but that domain belongs to ${vtxt}: its AASA file (${src}) lists only [${list% }] and not this extension (team ${TEAM_ID:-?}, bundle ${EXT_ID}), and ${swtxt}. The entry cannot work, because only the domain's owner can add this extension to its AASA file. Fix: remove ${h} from ${fixwhere}."
+    (( own_urls )) && msg+=" A URL kept in the URLs list also stays reserved: Apple requires every URL to be unique across all installed SSO payloads, so ${vtxt}'s own SSO profile could not use it."
+    vcheck FAIL "payload-foreign-domain:$h" "$msg"
+  else
+    while IFS='|' read -r st nm det; do
+      [[ -z "$st" ]] && continue
+      vcheck "$st" "$nm" "$det"
+    done <<< "$CH_HELD"
   fi
 }
 
@@ -1336,6 +1401,10 @@ check_kerberos() {   # gated: only when a Kerberos extension payload, a Kerberos
     vcheck INFO kerberos-realms "Kerberos realm(s): $(print -r -- "$realms" | /usr/bin/tr '\n' ' ')"
     while IFS= read -r r; do
       [[ -z "$r" ]] && continue
+      if [[ "$(print -r -- "$r" | /usr/bin/tr '[:lower:]' '[:upper:]')" == "$cloud" ]]; then
+        vcheck INFO "kerberos-dc:${r}" "cloud Kerberos realm: the ticket is issued through Microsoft Entra ID, so there is no domain controller to reach, and it is not a Kerberos extension realm, so app-sso -i is not run for it"
+        continue
+      fi
       capture_user "$D2/app-sso-realminfo-${r}.txt" app-sso -i "$r"
       ri="$D2/app-sso-realminfo-${r}.txt"
       ri_login=$(plist_str "$ri" login_date); ri_pw=$(plist_str "$ri" password_changed_date); ri_site=$(plist_str "$ri" site_code); ri_net=$(plist_str "$ri" networkAvailable)
@@ -1345,10 +1414,6 @@ check_kerberos() {   # gated: only when a Kerberos extension payload, a Kerberos
         else
           vcheck INFO "kerberos-realm-info:${r}" "last Kerberos login ${ri_login:-unknown} (UTC), password last changed ${ri_pw:-unknown} (UTC), AD site ${ri_site:-none}, networkAvailable=${ri_net:-unknown}"
         fi
-      fi
-      if [[ "$(print -r -- "$r" | /usr/bin/tr '[:lower:]' '[:upper:]')" == "$cloud" ]]; then
-        vcheck INFO "kerberos-dc:${r}" "cloud Kerberos realm: the ticket is issued through Microsoft Entra ID, so there is no domain controller to reach for this realm"
-        continue
       fi
       srv=$("$DIGBIN" +short +time=3 +tries=1 SRV "_kerberos._tcp.${r}" 2>/dev/null | /usr/bin/head -3)
       { print "# dig SRV _kerberos._tcp.${r}"; print -r -- "$srv"; } > "$D6/kerberos-dc-${r}.txt"
@@ -1444,6 +1509,12 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
     dx "Apple's AASA servers (app-site-association.cdn-apple.com and app-site-association.networking.apple) are being TLS-inspected on this network." \
        "macOS validates each SSO extension through Apple's CDN. Microsoft documents that these two domains must not be TLS-inspected." \
        "Ask the network team to exempt *.cdn-apple.com and *.networking.apple from TLS inspection, then register again."
+  fi
+  if vhas 'FAIL\|payload-foreign-domain:'; then
+    doms=$(/usr/bin/grep -E '^FAIL\|payload-foreign-domain:' "$VAL" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed 's/^[^:]*://' | /usr/bin/sort -u | /usr/bin/tr '\n' ' ')
+    dx "The profile lists a domain that belongs to another vendor: ${doms% }." \
+       "That domain's own AASA file lists only the other vendor's apps, so macOS refuses to let this extension act for it. The entry cannot work, and a URL kept in the URLs list stays reserved, so the vendor's own SSO profile could not use it." \
+       "Remove the domain from the URLs list and from the Associated Domains payload. See the payload-foreign-domain line for the evidence, including what macOS decided."
   fi
   if vhas 'FAIL\|(domain-association|aasa-origin|aasa-cdn)' || /usr/bin/grep -qE '^WARN\|pair:.*DENIED' "$VAL" 2>/dev/null; then
     doms=$( { /usr/bin/grep -E '^FAIL\|(domain-association|aasa-origin|aasa-cdn):' "$VAL" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^[^:]+://'; /usr/bin/grep -E '^WARN\|pair:.*DENIED' "$VAL" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^pair:[^@]*@//'; } | /usr/bin/sort -u )
@@ -2156,6 +2227,8 @@ else vcheck FAIL sso-token "SSO token expired: $TOK_EXP"; fi
 # --- payload: URLs, associated domains, hosts to test
 URLS=$(xml_values "$XMLP" URLs | /usr/bin/sort -u)
 ASSOC_HOSTS=$(xml_values "$XMLP" AssociatedDomains | /usr/bin/grep '^authsrv:' | /usr/bin/sed -E 's/^authsrv://; s/\?.*$//' | /usr/bin/sort -u)
+EXT_URL_HOSTS=$(ext_payload_url_hosts | /usr/bin/sort -u)
+EXT_ASSOC_HOSTS=$(ad_pairs "$XMLP" | while IFS='|' read -r pa pd; do [[ -n "$pa" ]] && app_is_active "$pa" && print -r -- "${pd%%\?*}"; done | /usr/bin/sort -u)
 HOSTS=""
 while IFS= read -r u; do [[ -n "$u" ]] && HOSTS+="$(url_host "$u")"$'\n'; done <<< "$URLS"
 for k in nonceEndpointURL tokenEndpointURL jwksEndpointURL; do
