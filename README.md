@@ -32,7 +32,6 @@ The current version is **3.0.0**. The version is in the script's file name and o
 - [Troubleshooting the script](#troubleshooting-the-script)
 - [Versioning and file naming](#versioning-and-file-naming)
 - [Reporting issues](#reporting-issues)
-- [License and disclaimer](#license-and-disclaimer)
 
 ---
 
@@ -469,5 +468,3 @@ When you open an issue, please include:
 - the `RESULT:` line, the **validation summary** and the specific lines that look wrong, with usernames, tenant IDs and host names removed
 
 **Do not attach a full bundle or its sysdiagnose to a public issue**; both contain identifying data.
-
----
