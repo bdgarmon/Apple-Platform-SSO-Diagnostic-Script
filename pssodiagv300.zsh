@@ -1825,6 +1825,8 @@ check_payload_vs_device() {   # needs XMLP S_STATE EXT_ID TEAM_ID CONSOLE_USER D
       ln=$(print -r -- "$n" | lc)
       if [[ -n "$con" && "$ln" == "$con" ]]; then
         vcheck FAIL "payload-nonplatform-account:$n" "the logged-in user '$n' is exempt from Platform SSO - registration will never be offered to them"
+      elif [[ "$ln" == root ]]; then
+        vcheck PASS "payload-nonplatform-account:$n" "listed as exempt; the root account (UID 0) always exists on macOS, even though it is normally disabled"
       elif [[ -z "$local_all" ]]; then
         vcheck INFO "payload-nonplatform-account:$n" "listed as exempt; the local account list was not available to confirm it exists"
       elif print -r -- "$local_all" | lc | /usr/bin/grep -qxF "$ln"; then
