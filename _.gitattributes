@@ -1,0 +1,4 @@
+# The script runs on macOS, so always check it out with Unix (LF) line endings,
+# even on Windows, where Git can otherwise convert them to CRLF (core.autocrlf=true).
+# A CRLF copy fails on a Mac with "bad interpreter: /bin/zsh^M".
+*.zsh text eol=lf
