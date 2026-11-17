@@ -41,6 +41,7 @@ The current version is **3.1.0**. The version is in the script's file name and o
 1. **Collects evidence**
    - PSSO state from `app-sso platform -s`, the extension registration from `pluginkit`, and the local accounts.
    - The configuration profiles MDM delivered, including the Extensible SSO and Associated Domains payloads, and their install, update and removal events.
+   - An **MDM command timeline**: every request the MDM server sent this Mac, how the Mac answered, and which profile each install was. After an ADE enrollment made in Setup Assistant it lists the commands in order and calls out long quiet gaps, which shows where a "stuck in Setup Assistant" enrollment waited.
    - Unified-log slices for PSSO registration attempts, with every timestamp converted to UTC. macOS prints each log line in the time zone in effect when it was written, which misleads on a Mac that changes zone during Setup Assistant.
    - The identity provider extension's own log files (the Company Portal SSO extension, Okta Verify) when present, and Intelligent Hub's `hubcli` archive and unified log when Hub is installed.
    - A `sysdiagnose` archive, plus a record of exactly how it was captured, so it can be handed to Apple Support.
@@ -229,7 +230,7 @@ PSSO-Diag-<host>-<timestamp>/
   MANIFEST.txt                     every file with its size
   01-sysdiagnose/                  Apple's archive (unmodified) + how-it-was-captured record
   02-psso-state/                   app-sso state, pluginkit, local accounts, Kerberos realm info
-  03-mdm-payload/                  installed profiles, SSO payload, install/update/removal log
+  03-mdm-payload/                  installed profiles, SSO payload, install/update/removal log, MDM command log
   04-psso-registration-logs/       registration timeline, AppSSO config, user-name trace, extension logs
   05-hub-logs/                     Intelligent Hub logs and health-check slice
   06-validation/                   evidence behind the automated checks (network probes in a subfolder)
@@ -314,6 +315,11 @@ Every check has a stable name (shown in `code` below), and the raw evidence is i
 - `payload-account-name`: reports the token-to-user mapping that is defined, without judging it.
 - `payload-app-identifier:*`: Associated Domains application IDs match the extension's host app.
 - `payload-setup-assistant`: reports the Setup Assistant (Simplified Setup) keys and whether the Mac is ADE-enrolled.
+
+**MDM command timeline** (built from `03-mdm-payload/*log-show-mdm-commands.txt`; the timeline is also in the findings)
+- `mdm-await-configuration`: whether the enrollment profile has `AwaitDeviceConfigured` on, which makes Setup Assistant wait for the MDM server to send `DeviceConfigured` ([Apple](https://developer.apple.com/documentation/devicemanagement/token-update) documents no timeout for that wait).
+- `mdm-setup-gap`: after an ADE enrollment made in Setup Assistant (inside the log window), the longest stretch with no server request and the total time from enrollment to the last command. WARN at 10 minutes or more. A long app download can explain a gap; otherwise the server was waiting on something and not sending.
+- `mdm-notnow`: how many commands the Mac answered `NotNow` (told the server to retry later) while in Setup Assistant.
 
 **Associated domains**
 - `domain-association:*`: for each host, what `swcutil` decided for the extension. A missing payload entry is only a problem when macOS has no approval either, because some apps (for example Company Portal) carry their domains inside the app.
@@ -511,7 +517,7 @@ The bundle's `README.txt` and `collector.log` also record the script version tha
 | 2.7 | `--handoff-url` (released as `--test-url`); handling of an unknown team ID before registration completes |
 | 2.8 | Running web-filter and VPN detection with start times; Microsoft sign-in redirect probe; `--tests-only` |
 | 3.0 | Plain-language `RESULT:` line and DIAGNOSIS section (result also in the zip name); AppSSO debug-logging status and `--debug-logging`; Okta checks and Okta Verify logs; payload settings listing and Setup Assistant key report; leftover-state checks; Kerberos checks and `--kerberos-url` |
-| 3.1 | The Redirect URL network tests: Microsoft, Okta and Omnissa Hub default URL lists plus the URLs in the payload, run first and shown live, and on their own with `--test-url` (the Safari test became `--handoff-url`); an exempt `root` account passes; `okta-org-url` accepts a custom domain |
+| 3.1 | The Redirect URL network tests: Microsoft, Okta and Omnissa Hub default URL lists plus the URLs in the payload, run first and shown live, and on their own with `--test-url` (the Safari test became `--handoff-url`); an exempt `root` account passes; `okta-org-url` accepts a custom domain; the MDM command timeline and the `mdm-*` checks |
 
 ---
 
