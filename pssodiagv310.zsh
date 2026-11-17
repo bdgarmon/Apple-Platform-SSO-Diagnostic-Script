@@ -1744,7 +1744,7 @@ rurl_probe() {   # rurl_probe <url> -> RP_STATUS (ok | err | down), RP_TEXT, RP_
     return 0
   fi
   RP_STATUS=down
-  iss=$(tls_issuer "$vf"); iss=$(print -r -- "$iss" | /usr/bin/sed -nE 's/.*CN=([^;]*).*/\1/p; t; p' | /usr/bin/head -1)
+  iss=$(tls_issuer "$vf"); iss=$(print -r -- "$iss" | /usr/bin/awk '{ i = index($0, "CN="); if (i > 0) { v = substr($0, i + 3); sub(/;.*/, "", v); print v } else print $0; exit }')
   tun=$(/usr/bin/grep -o 'CONNECT tunnel failed, response [0-9]*' "$vf" 2>/dev/null | /usr/bin/head -1)
   if [[ -n "$tun" ]]; then RP_TEXT="NOT reachable - the proxy refused the connection (${tun})"; return 0; fi
   case "$rc" in
@@ -1930,8 +1930,14 @@ rurl_test_other() {   # an extension this script has no default URL list for: te
 
 rurl_test_apple() {   # macOS validates every SSO domain through Apple's CDN, so Apple's two associated-domain servers must be reachable too
   local u
-  rurl_say ""; rurl_say "Testing Apple's associated-domain servers (macOS validates each SSO domain through Apple's CDN; Microsoft documents that these two must not be blocked or TLS-inspected)..."
-  for u in "${RURL_APPLE_HOSTS[@]}"; do rurl_probe_line "$u"; rurl_flag required apple "$u" "Apple associated-domain server"; done
+  local bad=0
+  rurl_say ""; rurl_say "Testing Apple's associated-domain servers (macOS validates each SSO domain through Apple's CDN)..."
+  for u in "${RURL_APPLE_HOSTS[@]}"; do
+    rurl_probe_line "$u"; rurl_flag required apple "$u" "Apple associated-domain server"
+    [[ "$RP_STATUS" == ok ]] || bad=1
+  done
+  (( bad )) && rurl_say "  Microsoft documents that these two hosts must be reachable and must not be TLS-inspected."
+  return 0
 }
 
 rurl_test_asked() {   # URLs the person running the script asked for with --test-url <url>
