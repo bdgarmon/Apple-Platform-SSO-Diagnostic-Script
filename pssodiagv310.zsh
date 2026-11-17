@@ -1505,7 +1505,7 @@ compute_result() {   # sets RESULT_CODE and RESULT_LINE (one plain sentence) and
 }
 
 build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: what we see, what it means, what to do.
-  local n=0 nonhttps outcome LA_TIME shown responded vhas doms d sw swv apps has_psso=0
+  local n=0 nonhttps outcome LA_TIME shown responded vhas doms d sw swv apps has_psso=0 af rf
   psso_configured && has_psso=1
   vhas() { /usr/bin/grep -qE "^$1" "$VAL" 2>/dev/null; }
   dx() { n=$(( n + 1 )); print "  ${n}. $1"; print "       What it means: $2"; print "       What to do:    $3"; }
@@ -1517,8 +1517,10 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
        "Microsoft's sign-in service does not redirect to plain http, so something between this Mac and Microsoft (a web filter, VPN, proxy or security agent) is probably answering instead." \
        "Look at the network-agent lines in the list below. Ask your security team to repeat the registration with those products off, or to exempt Microsoft sign-in and the Company Portal SSO extension. Run this script with --tests-only right after the next attempt."
   fi
-  if vhas 'FAIL\|redirect-url:'; then
-    doms=$(/usr/bin/grep -E '^FAIL\|redirect-url:' "$VAL" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^redirect-url:[a-z]+://' | /usr/bin/tr '\n' ' ')
+  rf=$(/usr/bin/grep -E '^FAIL\|redirect-url:' "$VAL" 2>/dev/null | /usr/bin/grep -v '^FAIL|redirect-url:apple:')
+  af=$(/usr/bin/grep -E '^FAIL\|(domain-association|aasa-origin|aasa-cdn):' "$VAL" 2>/dev/null | /usr/bin/grep -vE '^FAIL\|aasa-cdn:[^|]*\|Apple CDN returned HTTP 000')
+  if [[ -n "$rf" ]]; then
+    doms=$(print -r -- "$rf" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^redirect-url:[a-z]+://' | /usr/bin/tr '\n' ' ')
     dx "These URLs that the payload needs could not be reached from this Mac: ${doms% }." \
        "Platform SSO sends the sign-in traffic for these URLs to the identity provider. A firewall, web filter, DNS filter or proxy that blocks them, or a site that is offline, makes registration or sign-in fail." \
        "The reason is shown next to each URL in the Redirect URL tests (the name does not resolve, timed out, reset, TLS problem, HTTP error). Ask the network team to allow the URL, or check the vendor's status page if the site is offline. After a change, re-run only these tests with: sudo ./${SCRIPT_PATH:t} --test-url"
@@ -1534,6 +1536,11 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
        "It may be a typo, a URL that is blocked, or a site that is offline. An entry that only acts as a URL prefix may not resolve at all." \
        "See the Redirect URL tests: a 'looks like a typo of' line names the URL it nearly matches. Fix or remove the entry in the MDM profile, or ask the network team to allow it."
   fi
+  if vhas 'FAIL\|redirect-url:apple:' || vhas 'FAIL\|aasa-cdn:[^|]*\|Apple CDN returned HTTP 000' || vhas 'WARN\|apple-cdn-tls:[^|]*\|could not connect'; then
+    dx "Apple's associated-domain servers (app-site-association.cdn-apple.com and app-site-association.networking.apple) could not be reached from this Mac." \
+       "macOS validates each SSO domain's apple-app-site-association file through Apple's CDN, and Microsoft documents that these two hosts must be reachable and not TLS-inspected. A Mac that cannot reach them cannot validate a new association. Existing approvals are re-checked on a schedule (swcutil shows a Next Check date); what macOS does if a re-check cannot reach the CDN is unknown, so fix this before that date. This is a network problem, not a profile problem." \
+       "Ask the network team to allow both hosts and not to inspect or rewrite their TLS. The Redirect URL tests at the start of the run show the reason next to each host (DNS, timeout, reset, TLS). After the change, re-test only these with: sudo ./${SCRIPT_PATH:t} --test-url"
+  fi
   if vhas 'FAIL\|apple-cdn-tls'; then
     dx "Apple's AASA servers (app-site-association.cdn-apple.com and app-site-association.networking.apple) are being TLS-inspected on this network." \
        "macOS validates each SSO extension through Apple's CDN. Microsoft documents that these two domains must not be TLS-inspected." \
@@ -1545,8 +1552,8 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
        "That domain's own AASA file lists only the other vendor's apps, so macOS refuses to let this extension act for it. The entry cannot work, and a URL kept in the URLs list stays reserved, so the vendor's own SSO profile could not use it." \
        "Remove the domain from the URLs list and from the Associated Domains payload. See the payload-foreign-domain line for the evidence, including what macOS decided."
   fi
-  if vhas 'FAIL\|(domain-association|aasa-origin|aasa-cdn)' || /usr/bin/grep -qE '^WARN\|pair:.*DENIED' "$VAL" 2>/dev/null; then
-    doms=$( { /usr/bin/grep -E '^FAIL\|(domain-association|aasa-origin|aasa-cdn):' "$VAL" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^[^:]+://'; /usr/bin/grep -E '^WARN\|pair:.*DENIED' "$VAL" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^pair:[^@]*@//'; } | /usr/bin/sort -u )
+  if [[ -n "$af" ]] || /usr/bin/grep -qE '^WARN\|pair:.*DENIED' "$VAL" 2>/dev/null; then
+    doms=$( { print -r -- "$af" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^[^:]+://'; /usr/bin/grep -E '^WARN\|pair:.*DENIED' "$VAL" | /usr/bin/cut -d'|' -f2 | /usr/bin/sed -E 's/^pair:[^@]*@//'; } | /usr/bin/sort -u )
     dx "macOS or the domain's AASA file does not authorize the extension for: $(print -r -- "$doms" | /usr/bin/tr '\n' ' ' | /usr/bin/sed 's/ $//')." \
        "An extension may only act for a domain when that domain's own apple-app-site-association file lists the app. Without that, macOS refuses." \
        "See the per-domain lines below. If a domain's file lists only other apps, adding that domain to your profile cannot make this extension act for it: remove the entry, or use the extension the domain's file names. A missing profile entry can be added; a file on someone else's domain cannot be changed."
@@ -1575,7 +1582,12 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
        "macOS cannot find the extension app that the profile points to." \
        "Check that the app (Company Portal, Okta Verify or Hub) is installed, then check the extension-installed line."
   fi
-  if vhas '(WARN|FAIL)\|clock-skew'; then
+  if vhas 'WARN\|clock-skew\|could not query'; then
+    dx "This Mac could not check its clock against Apple's time server (time.apple.com, UDP port 123), so its clock accuracy was not verified." \
+       "Assertions and tokens carry timestamps, and a large offset can make the identity provider reject them. A network that blocks UDP 123 also blocks the Mac's automatic time sync." \
+       "Allow UDP 123 to time.apple.com, or check System Settings > General > Date & Time yourself (set the time automatically), then run the script again."
+  fi
+  if vhas '(WARN|FAIL)\|clock-skew\|offset'; then
     dx "This Mac's clock differs from Apple's time server." \
        "Assertions and tokens carry timestamps, and a large offset can make the identity provider reject them." \
        "Turn on automatic date and time (System Settings > General > Date & Time) and run the script again."
@@ -1645,6 +1657,7 @@ RURL_MS_REQUIRED=(https://login.microsoftonline.com https://login.microsoft.com 
 RURL_MS_OPTIONAL=(https://login.partner.microsoftonline.cn https://login.chinacloudapi.cn https://login.microsoftonline.us https://login-us.microsoftonline.com)
 RURL_OKTA_PATHS=(/device-access/api/v1/nonce /oauth2/v1/token /v1/auth/device-sign)
 RURL_HUB_PATH=/mpsso
+RURL_APPLE_HOSTS=(https://app-site-association.cdn-apple.com https://app-site-association.networking.apple)
 RURL_PROXY_ARGS=(); RURL_PROXY_NOTE=""
 RURL_TABLE=""; RURL_Q=""; RURL_EV=""
 RURL_REQ_FAILED=0; RURL_ANY_FAIL=0; RURL_N_TESTED=0; RURL_N_OK=0; RURL_VENDOR_RAN=0; RURL_ASKED_RAN=0
@@ -1915,6 +1928,12 @@ rurl_test_other() {   # an extension this script has no default URL list for: te
   while IFS= read -r u; do [[ -z "$u" ]] && continue; rurl_probe_line "$u"; rurl_flag optional other "$u" "URL listed by ${ext}"; done <<< "$pay"
 }
 
+rurl_test_apple() {   # macOS validates every SSO domain through Apple's CDN, so Apple's two associated-domain servers must be reachable too
+  local u
+  rurl_say ""; rurl_say "Testing Apple's associated-domain servers (macOS validates each SSO domain through Apple's CDN; Microsoft documents that these two must not be blocked or TLS-inspected)..."
+  for u in "${RURL_APPLE_HOSTS[@]}"; do rurl_probe_line "$u"; rurl_flag required apple "$u" "Apple associated-domain server"; done
+}
+
 rurl_test_asked() {   # URLs the person running the script asked for with --test-url <url>
   local u
   (( ${#EXTRA_URLS[@]} )) || return 0
@@ -1960,6 +1979,7 @@ run_redirect_url_tests() {   # needs STAGE; EXTRA_URLS optional. Returns 1 when 
       /usr/bin/awk -F'|' '$1 == "Other" { print $2 }' "$RURL_TABLE" | /usr/bin/sort -u | while IFS= read -r e; do rurl_test_other "$e"; done
     fi
   fi
+  if [[ -n "$vendors" ]] || (( URL_TESTS_ONLY )); then rurl_test_apple; fi   # with a Redirect payload, or when the admin runs --test-url on its own
   rurl_test_asked
   rurl_say ""
   if (( RURL_N_TESTED == 0 )); then rurl_say "Summary: no URLs were tested."
@@ -1968,7 +1988,7 @@ run_redirect_url_tests() {   # needs STAGE; EXTRA_URLS optional. Returns 1 when 
   elif (( RURL_N_TESTED == 0 )); then :
   elif (( RURL_ANY_FAIL || RURL_N_OK < RURL_N_TESTED )); then rurl_say "Some URLs need attention (see above)."
   elif (( RURL_VENDOR_RAN )); then rurl_say "Every URL tested is reachable, and every URL the vendor requires is in the payload." "${C_OK}Every URL tested is reachable, and every URL the vendor requires is in the payload.${C_OFF}"
-  else rurl_say "Every URL you asked about is reachable." "${C_OK}Every URL you asked about is reachable.${C_OFF}"; fi
+  else rurl_say "Every URL tested is reachable." "${C_OK}Every URL tested is reachable.${C_OFF}"; fi
   /bin/rm -f "$xml" "$FLAT"
   (( RURL_REQ_FAILED || RURL_ANY_FAIL )) && return 1
   return 0
