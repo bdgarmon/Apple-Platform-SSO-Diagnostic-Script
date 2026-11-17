@@ -1,6 +1,6 @@
 # pssodiag: a Platform SSO diagnostic tool for macOS
 
-`pssodiagv300.zsh` is a single-file zsh script that answers one question on a Mac:
+`pssodiagv310.zsh` is a single-file zsh script that answers one question on a Mac:
 
 > **Did Apple Platform SSO (PSSO) registration succeed, and is it working the way it was designed to?**
 
@@ -10,7 +10,7 @@ It was built for troubleshooting PSSO with **Microsoft Entra ID (the Intune Comp
 
 A companion troubleshooting guide, built around this script, is on the [After Six Computers blog](https://aftersixcomputers.com/how-to-troubleshoot-apple-platform-sso/).
 
-The current version is **3.0.0**. The version is in the script's file name and on the second line of the script.
+The current version is **3.1.0**. The version is in the script's file name and on the second line of the script.
 
 ---
 
@@ -20,6 +20,7 @@ The current version is **3.0.0**. The version is in the script's file name and o
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Recommended workflow for a failing Mac](#recommended-workflow-for-a-failing-mac)
+- [The Redirect URL network tests](#the-redirect-url-network-tests)
 - [Options](#options)
 - [What happens when you run it](#what-happens-when-you-run-it)
 - [The output bundle](#the-output-bundle)
@@ -43,9 +44,10 @@ The current version is **3.0.0**. The version is in the script's file name and o
    - Unified-log slices for PSSO registration attempts, with every timestamp converted to UTC. macOS prints each log line in the time zone in effect when it was written, which misleads on a Mac that changes zone during Setup Assistant.
    - The identity provider extension's own log files (the Company Portal SSO extension, Okta Verify) when present, and Intelligent Hub's `hubcli` archive and unified log when Hub is installed.
    - A `sysdiagnose` archive, plus a record of exactly how it was captured, so it can be handed to Apple Support.
-2. **Runs automated checks.** Registration state, the profile against the device, associated domains, TLS inspection, identity provider endpoints, clock skew, running web filters and VPNs, vendor-specific profile checks, Kerberos, leftover state, and live Safari tests. See [Checks it runs](#checks-it-runs).
-3. **Answers in plain English.** The summary file, the end of the run and the zip name all carry a `RESULT:` line (registered or not, and why). A DIAGNOSIS section turns each recognized failure pattern into "what we see / what it means / what to do".
-4. **Packages everything** as `PSSO-Diag-<hostname>-<timestamp>-<RESULT>.zip`.
+2. **Tests the Redirect URLs first.** Before it collects anything, it tests that the URLs in a Redirect-type SSO payload are online and reachable from this Mac, and that the payload lists the URLs the vendor requires. See [The Redirect URL network tests](#the-redirect-url-network-tests).
+3. **Runs automated checks.** Registration state, the profile against the device, associated domains, TLS inspection, identity provider endpoints, clock skew, running web filters and VPNs, vendor-specific profile checks, Kerberos, leftover state, and live Safari tests. See [Checks it runs](#checks-it-runs).
+4. **Answers in plain English.** The summary file, the end of the run and the zip name all carry a `RESULT:` line (registered or not, and why). A DIAGNOSIS section turns each recognized failure pattern into "what we see / what it means / what to do".
+5. **Packages everything** as `PSSO-Diag-<hostname>-<timestamp>-<RESULT>.zip`.
 
 The checks are automated greps and probes. They are a starting point, **not a verdict**. Everything they read is in the zip so you can confirm it.
 
@@ -66,7 +68,7 @@ The checks are automated greps and probes. They are a starting point, **not a ve
 
 ### Granting Full Disk Access
 
-1. Open **System Settings > Privacy & Security > Full Disk Access**. (`sudo ./pssodiagv300.zsh --open-fda-settings` opens the pane for you.)
+1. Open **System Settings > Privacy & Security > Full Disk Access**. (`sudo ./pssodiagv310.zsh --open-fda-settings` opens the pane for you.)
 2. Turn on the terminal app you use (Terminal, iTerm and so on), adding it with **+** if needed.
 3. Quit the terminal app completely (Command-Q) and reopen it. macOS applies the permission only to terminals started afterwards.
 
@@ -76,16 +78,16 @@ The checks are automated greps and probes. They are a starting point, **not a ve
 
 ```bash
 # 1. Make the script executable
-chmod +x ./pssodiagv300.zsh
+chmod +x ./pssodiagv310.zsh
 
 # 2. Optional: syntax check
-zsh -n ./pssodiagv300.zsh && echo OK
+zsh -n ./pssodiagv310.zsh && echo OK
 
 # 3. Optional: show the plan without collecting anything
-sudo ./pssodiagv300.zsh --dry-run
+sudo ./pssodiagv310.zsh --dry-run
 
 # 4. Run it (it asks "Proceed? [y/N]" unless you pass --yes)
-sudo ./pssodiagv300.zsh
+sudo ./pssodiagv310.zsh
 ```
 
 When it finishes it prints the path of the zip, which is written to **the folder the script is in** unless you pass `--output-dir`. The `RESULT:` line, any informational notes and any collection problems are printed underneath.
@@ -94,21 +96,27 @@ When it finishes it prints the path of the zip, which is written to **the folder
 
 ```bash
 # Fast run right after a failed registration attempt
-sudo ./pssodiagv300.zsh --tests-only
+sudo ./pssodiagv310.zsh --tests-only
 
-# Also test whether specific sites are handed to the SSO extension
-sudo ./pssodiagv300.zsh --tests-only \
-  --test-url https://login.microsoftonline.com/ \
-  --test-url https://example-tenant.example.com/
+# Run ONLY the Redirect URL network tests (no collection, no zip), for example after a firewall change
+sudo ./pssodiagv310.zsh --test-url
+
+# ...and also test some URLs of your own
+sudo ./pssodiagv310.zsh --test-url https://login.microsoftonline.com/ https://example-tenant.example.com/
+
+# Also check, with a Safari test, whether specific sites are handed to the SSO extension
+sudo ./pssodiagv310.zsh --tests-only \
+  --handoff-url https://login.microsoftonline.com/ \
+  --handoff-url https://example-tenant.example.com/
 
 # Kerberos web test against an internal site (runs curl as the logged-in user)
-sudo ./pssodiagv300.zsh --kerberos-url https://intranet.example.com/
+sudo ./pssodiagv310.zsh --kerberos-url https://intranet.example.com/
 
 # Write the zip somewhere else
-sudo ./pssodiagv300.zsh --output-dir /Users/Shared/diag
+sudo ./pssodiagv310.zsh --output-dir /Users/Shared/diag
 
 # Unattended, with a longer log window
-sudo ./pssodiagv300.zsh --yes --log-window 3d
+sudo ./pssodiagv310.zsh --yes --log-window 3d
 ```
 
 ---
@@ -118,16 +126,50 @@ sudo ./pssodiagv300.zsh --yes --log-window 3d
 macOS keeps debug messages for the Platform SSO log subsystem only briefly unless it is asked to persist them. If you can reproduce the problem:
 
 1. **Turn on persistent debug logging.**
-   `sudo ./pssodiagv300.zsh --debug-logging on`
+   `sudo ./pssodiagv310.zsh --debug-logging on`
    It prints the exact `log config` command, asks first, changes the setting for the `com.apple.AppSSO` subsystem only, and exits without collecting anything. (For the Microsoft extension, Microsoft also suggests Company Portal > Settings > *Turn on advanced logging*.)
 2. **Reproduce the problem.**
 3. **Run the script right afterwards.**
-   `sudo ./pssodiagv300.zsh --tests-only`
+   `sudo ./pssodiagv310.zsh --tests-only`
    This skips `sysdiagnose` and the `hubcli` archive and uses a three hour log window, so the evidence reflects the attempt you just made.
 4. **Turn logging back to the default.**
-   `sudo ./pssodiagv300.zsh --debug-logging off`
+   `sudo ./pssodiagv310.zsh --debug-logging off`
 
 The script also reports, in every run, whether AppSSO debug logging is currently persisted (`appsso-debug-logging`), and the DIAGNOSIS section suggests the steps above when a failure would have benefited from it.
+
+---
+
+## The Redirect URL network tests
+
+The first thing the script does on every run, before it collects anything, is test the **Redirect URLs** of the Redirect-type SSO payloads installed on the Mac. A firewall or web filter that blocks one of these URLs, a URL that is missing from the payload or has a typo, or a site that is offline, is among the most common reasons Platform SSO fails, and it takes seconds to see. Each URL and its result are shown on the screen **as it is tested**:
+
+```text
+Testing Microsoft Redirect URLs (the 3 that Microsoft requires)...
+  https://login.microsoftonline.com                reachable (HTTP 200, 0.24 s)
+  https://login.microsoft.com                      reachable (HTTP 200, 0.28 s)
+  https://sts.windows.net                          NOT reachable - timed out (a firewall or proxy may be dropping the connection, or the site is offline)
+```
+
+The vendor is recognized from the extension named in the payload, and each vendor has a built-in list:
+
+| Vendor | URLs the script knows | Tests, in this order |
+|---|---|---|
+| **Microsoft** | Required: `https://login.microsoftonline.com`, `https://login.microsoft.com`, `https://sts.windows.net`. Optional, for sovereign clouds: `https://login.partner.microsoftonline.cn`, `https://login.chinacloudapi.cn`, `https://login.microsoftonline.us`, `https://login-us.microsoftonline.com` ([Microsoft's list](https://learn.microsoft.com/en-us/intune/device-configuration/settings-catalog/configure-platform-sso-macos?tabs=secure-enclave)) | 1. Are the three required URLs online and reachable? 2. Does the payload include any of the optional URLs, and if so, are those reachable? 3. Does the payload include the three required URLs? |
+| **Okta** | Your org's `/device-access/api/v1/nonce`, `/oauth2/v1/token` and `/v1/auth/device-sign` ([Okta's list](https://help.okta.com/oie/en-us/content/topics/oda/macos-pw-sync/configure-psso-se-macos-generic.htm)). The org host, including a custom domain, is read from the payload's URLs and `OktaVerify.OrgUrl` | Are they reachable? Does the payload include them? (The nonce URL is required for Secure Enclave and optional for password sync.) |
+| **Omnissa Hub** | `https://<your Access tenant>/mpsso` ([Omnissa's documentation](https://docs.omnissa.com/AccessPlatformSSO/ApplePlatformSSO/)); the tenant is read from the payload | Is it reachable? Does the payload include it? |
+
+After those, the script tests every **additional** Redirect URL the payload lists. If one nearly matches an expected URL it says so, for example "looks like a typo of https://login.microsoftonline.com". A Redirect payload for an extension the script has no list for has its own URLs tested. A Credential payload, such as Kerberos, has Hosts and no Redirect URLs, so it is skipped.
+
+**How each URL is judged**
+- **Reachable** means the server answered over HTTPS. Any HTTP status counts, because these are API endpoints that often answer a plain request with 404 or 405.
+- **Up but failing** means the server answered with a 5xx error, so the service may be offline.
+- **Not reachable** comes with a plain-English reason: the name does not resolve (DNS filtering, a typo, or a site that no longer exists), connection refused, timed out, connection reset, a TLS or certificate problem (the certificate issuer is shown), or a proxy that refused the connection.
+- A required URL that fails, or a required URL missing from the payload, is a **FAIL**. A failing optional or additional URL is a **WARN**. An additional entry that does not resolve and does not look like a typo is **INFO**, because an entry can be a URL prefix that macOS matches and nothing is served there.
+- The tests use the macOS system HTTPS proxy when one is set. With a proxy auto-config (PAC) file they connect directly, and the output says so, because a failure can then mean the Mac needs the PAC's proxy.
+
+**Running them on their own.** `sudo ./pssodiagv310.zsh --test-url` runs only these tests and exits: no collection, no zip, no prompt, and no Full Disk Access needed (it does need `sudo`, to read the installed profiles). Put URLs after it to test those too (at most 10). The exit status is `0` when everything is fine and `1` when a required URL is unreachable or missing, or a URL you listed fails. Use it to re-test after a firewall or profile change.
+
+**In a full run** they come first. If a required URL fails, the script asks `Continue with the full collection? [Y/n]` so you can stop and fix the network first; `--yes` continues without asking. The results are in the bundle as the `redirect-url:*` and `redirect-url-payload:*` checks, the full transcript is `06-validation/redirect-url-tests.txt`, and the DIAGNOSIS explains any failure.
 
 ---
 
@@ -143,7 +185,8 @@ The script also reports, in every run, whether AppSSO debug logging is currently
 | `--tests-only` | Fast mode: no sysdiagnose, no `hubcli` archive, and a 3 hour log window unless `--log-window` is given. Use it right after a failed attempt. |
 | `--no-browser-test` | Skip the background Safari navigation tests (the static checks still run). |
 | `--output-dir <path>` | Folder for the finished zip. Default: the folder the script is in. The folder is created if needed and checked for write access before anything is collected. |
-| `--test-url <url>` | Also test whether this URL is handed to the SSO extension. Repeatable, at most 10; each must be an `http://` or `https://` URL without spaces. |
+| `--test-url [url ...]` | Run **only** the [Redirect URL network tests](#the-redirect-url-network-tests), then exit: no collection, no zip, no prompt, no Full Disk Access needed. URLs listed after it are tested too (at most 10, each `http://` or `https://` without spaces). Exit status `0` when all is well, `1` when a required URL is unreachable or missing or a URL you listed fails. |
+| `--handoff-url <url>` | Also test, with static checks and a Safari test, whether this URL is handed to the SSO extension. Repeatable, at most 10; each must be an `http://` or `https://` URL without spaces. (Releases before 3.1 called it `--test-url`.) |
 | `--kerberos-url <url>` | Kerberos web test: run `curl --negotiate` as the logged-in user, then look in `klist` for a service ticket for `HTTP/<host>`. Repeatable, at most 3. |
 | `--debug-logging <on\|off>` | Turn persistent debug logging for the `com.apple.AppSSO` log subsystem on or off (it asks first, `--yes` skips the question), then exit without collecting anything. With `--dry-run` it only shows what it would do. |
 | `--open-fda-settings` | Open the Full Disk Access pane, print the steps, and exit. |
@@ -158,6 +201,7 @@ A full run takes about five minutes on the machines it was developed on. `sysdia
 | Step | What it does |
 |---|---|
 | Start-up gate | Checks it is on macOS, running as root, and that the terminal has Full Disk Access. Prints the plan and asks to proceed. |
+| Redirect URL tests | The first tests: each vendor's default URLs plus the URLs in the payload, shown live. If a required URL fails, it asks whether to continue. |
 | 00 System context | OS version, hardware, time zone, installed SSO-related packages. |
 | 01 sysdiagnose | Runs `sysdiagnose` with `-u -b` only when this macOS lists those flags. If another sysdiagnose is already running it waits and retries (up to 21 times, 15 seconds apart). |
 | 02 PSSO state | `app-sso` state, `pluginkit` listings, local accounts, and Kerberos realm information, run as the console user where needed. |
@@ -252,6 +296,11 @@ Everything printed at the end of the run is also in the bundle: the `RESULT:` li
 
 Every check has a stable name (shown in `code` below), and the raw evidence is in `06-validation/` or the folder named in the check.
 
+**Redirect URL network tests** (the first tests of every run; see [above](#the-redirect-url-network-tests))
+- `redirect-url:<vendor>:<url>`: whether each URL is online and reachable, with the reason when it is not. Required URLs FAIL, optional and additional URLs WARN.
+- `redirect-url-payload:<vendor>[:<url>]`: whether the payload lists the URLs the vendor requires. A missing URL FAILs.
+- `redirect-url-tests`: recorded when there is no Redirect-type payload to test.
+
 **Registration state**
 - `device-registration`, `user-registration`, `device-keys`, `user-secure-enclave-key`, `sso-token`: registration completed, user state, key presence, token validity. When nothing is registered yet, dependent checks are skipped instead of repeating the failure. On a Mac that has **no Platform SSO configuration at all** (for example one that only uses the Kerberos extension) these checks, and `payload-extension-identity`, are skipped and the result is `KERBEROS-ONLY` or `NO-PSSO`.
 - `extension-installed`, `extension-team`: the extension is registered with `pluginkit`; when macOS reports no team ID (normal before registration completes) the team is taken from the SSO payload.
@@ -279,14 +328,14 @@ Every check has a stable name (shown in `code` below), and the raw evidence is i
 
 **Functional**
 - `safari-navigation:*`: opens the payload URLs in Safari in the background and checks whether AppSSO handed each one to the extension, naming the extension that received it.
-- `test-url:*` (`--test-url`): for any URL you name, checks whether the payload covers it (scheme, host and path prefix), what `swcutil` and the AASA say, and whether Safari actually hands it to the extension. With `--no-browser-test` you get a static prediction only.
+- `handoff-url:*` (`--handoff-url`): for any URL you name, checks whether the payload covers it (scheme, host and path prefix), what `swcutil` and the AASA say, and whether Safari actually hands it to the extension. With `--no-browser-test` you get a static prediction only.
 
 **Microsoft and Hub together**
 - `hub-allow-list` *(Microsoft extension only)*: Microsoft's extension turned the Hub app away because it is not on its allow list.
 - `hub-authorization`: whether Hub's own SSO requests ended in an error, and via which extension.
 
 **Okta** *(when Okta's extension is active)*
-- `okta-preference-domains`, `okta-org-url`, `okta-protocol-version`, `okta-urls`, `okta-associated-domains`: the profile pieces Okta documents (two preference payloads, the org URL, protocol version 2.0, the nonce, token and device-sign paths, and both Okta app identifiers in Associated Domains). Okta Verify's own logs from the last three days are copied into the bundle.
+- `okta-preference-domains`, `okta-org-url`, `okta-protocol-version`, `okta-urls`, `okta-associated-domains`: the profile pieces Okta documents (two preference payloads, the org URL, protocol version 2.0, the nonce, token and device-sign paths, and both Okta app identifiers in Associated Domains). A custom domain is accepted, as Okta documents; the check is that the same host is used in the payload URLs and in `OktaVerify.OrgUrl`. Okta Verify's own logs from the last three days are copied into the bundle.
 
 **Kerberos** *(when a Kerberos extension payload, a Kerberos status in the PSSO state, or `--kerberos-url` is present)*
 - `kerberos-status:<realm>`: the import and connection status the PSSO state reports per realm.
@@ -335,6 +384,7 @@ It is **read-only apart from `sysdiagnose` and the `hubcli` archive**. It does n
 - It writes a temporary staging folder under `/private/var/tmp`, removed on exit.
 - `sysdiagnose` writes its archive into that staging folder.
 - The Safari tests open URLs in Safari in the background (about 15 seconds each). The script quits Safari afterwards only if the script started it. If the extension completes a sign-in for a URL you test, the identity provider may log a sign-in for that user, so prefer identity-provider login URLs.
+- The Redirect URL tests send one plain request to each URL, with no credentials.
 - The Kerberos web test (`--kerberos-url`) makes a request to the URL as the logged-in user, which may request a service ticket.
 - The finished zip is owned by the console user.
 - **The one exception is `--debug-logging on|off`, which you request explicitly.** It asks first, changes the log setting for the `com.apple.AppSSO` subsystem only, and exits.
@@ -347,10 +397,11 @@ The script makes outbound connections to:
 - the identity provider endpoints in the PSSO state (a nonce POST with no credentials, a JWKS GET, a token endpoint HEAD)
 - `login.microsoftonline.com` (the sign-in probes, when the Microsoft extension is active)
 - `time.apple.com` over UDP 123
-- the hosts of any `--test-url` and `--kerberos-url` URLs
+- the Redirect URLs (a plain GET with no credentials): Microsoft's, your Okta org's or Access tenant's, and any other URL the payload lists or you name with `--test-url`
+- the hosts of any `--handoff-url` and `--kerberos-url` URLs
 - for AD Kerberos realms, DNS SRV lookups (`_kerberos._tcp.<realm>`) and a TCP connection to port 88 on the first domain controller returned
 
-The probes use `curl` and do not use the system proxy configuration.
+The AASA, identity provider and sign-in probes use `curl` and do not use the system proxy configuration. The Redirect URL tests use the system HTTPS proxy when one is configured.
 
 ---
 
@@ -364,7 +415,7 @@ The probes use `curl` and do not use the system proxy configuration.
 | `3` | The terminal does not have Full Disk Access; nothing was collected. |
 | `130` | Interrupted (Ctrl-C); the staging folder is cleaned up. |
 
-`--debug-logging` exits `0` when it is cancelled or succeeds, and otherwise with the exit status of the `log config` command it ran. Note that the **result** (`REGISTERED`, `NOT-REGISTERED`, and so on) is not an exit code: a Mac that is not registered still produces a successful run.
+`--test-url` on its own exits `0` when every URL is fine and `1` when a required URL is unreachable or missing from the payload, or a URL you listed fails. `--debug-logging` exits `0` when it is cancelled or succeeds, and otherwise with the exit status of the `log config` command it ran. Note that the **result** (`REGISTERED`, `NOT-REGISTERED`, and so on) is not an exit code: a Mac that is not registered still produces a successful run.
 
 ---
 
@@ -380,7 +431,7 @@ The probes use `curl` and do not use the system proxy configuration.
 
 - **It cannot sign in for you.** It cannot force a PSSO login or token refresh, and it never sends credentials. The closest functional tests are the Safari navigation test and the Kerberos web test.
 - **"Handed to the extension" is not "signed in".** The Safari tests show that macOS routed the request to the extension, not that the page then authenticated. They cover Safari and apps that use Apple's networking stack; browsers such as Chrome and Firefox are out of scope.
-- **URL matching is an interpretation.** The static `--test-url` prediction uses the script's reading of how the payload's `URLs` entries match (scheme, host, path prefix). The live probe is the authority.
+- **URL matching is an interpretation.** The static `--handoff-url` prediction uses the script's reading of how the payload's `URLs` entries match (scheme, host, path prefix). The live probe is the authority.
 - **Log availability varies.** Results depend on what macOS has retained for the log window, and some messages are logged as `<private>`. Turning on persistent debug logging (see [the workflow](#recommended-workflow-for-a-failing-mac)) improves this.
 - **Agent detection is heuristic.** A running web-filter or VPN process does not prove it is steering traffic; the TLS lines show whether interception is happening.
 - **Some checks are extension-specific** (marked above), and the agent list is a fixed set of common products.
@@ -431,6 +482,8 @@ The probes use `curl` and do not use the system proxy configuration.
 | `sysdiagnose already in flight` | The script waits and retries automatically. If it still fails, wait for the other sysdiagnose to finish and re-run, or use `--skip-sysdiagnose`. |
 | `Bad --log-window` | Use a number plus `s`, `m`, `h` or `d`, for example `90m` or `6h`. |
 | `The output folder is not writable` | Choose another folder with `--output-dir`. |
+| `--test-url needs http:// or https:// URLs without spaces` | Give full URLs (at most 10). A word after `--test-url` that does not start with `http://` or `https://` is read as the next option and fails with `Unknown option`. |
+| A URL "does not resolve" but works in a browser | The tests connect directly, or through the system HTTPS proxy. With a proxy auto-config (PAC) file the browser may be using a proxy the test does not. |
 | `--kerberos-url needs an http:// or https:// URL` | Give a full URL without spaces (at most 3). |
 | `--debug-logging needs on or off` | Use `--debug-logging on` or `--debug-logging off`. |
 | Many `FAIL` lines right after enrollment | Registration may not have completed yet; check `device-registration` first, since several checks depend on it. |
@@ -442,8 +495,8 @@ The probes use `curl` and do not use the system proxy configuration.
 
 The script's version is in two places that change together on every release:
 
-- the **file name**: `pssodiagv` followed by the version without dots, for example version `3.0.0` is `pssodiagv300.zsh`
-- the **header comment** on line 2, for example `# pssodiagv300.zsh v3.0.0`
+- the **file name**: `pssodiagv` followed by the version without dots, for example version `3.1.0` is `pssodiagv310.zsh`
+- the **header comment** on line 2, for example `# pssodiagv310.zsh v3.1.0`
 
 The bundle's `README.txt` and `collector.log` also record the script version that produced them, which makes it easy to confirm which file someone actually ran.
 
@@ -453,9 +506,10 @@ The bundle's `README.txt` and `collector.log` also record the script version tha
 | 2.2 | Payload-versus-device checks |
 | 2.5 | `--output-dir` |
 | 2.6 | Per-pair Associated Domains checks |
-| 2.7 | `--test-url`; handling of an unknown team ID before registration completes |
+| 2.7 | `--handoff-url` (released as `--test-url`); handling of an unknown team ID before registration completes |
 | 2.8 | Running web-filter and VPN detection with start times; Microsoft sign-in redirect probe; `--tests-only` |
 | 3.0 | Plain-language `RESULT:` line and DIAGNOSIS section (result also in the zip name); AppSSO debug-logging status and `--debug-logging`; Okta checks and Okta Verify logs; payload settings listing and Setup Assistant key report; leftover-state checks; Kerberos checks and `--kerberos-url` |
+| 3.1 | The Redirect URL network tests: Microsoft, Okta and Omnissa Hub default URL lists plus the URLs in the payload, run first and shown live, and on their own with `--test-url` (the Safari test became `--handoff-url`); an exempt `root` account passes; `okta-org-url` accepts a custom domain |
 
 ---
 
