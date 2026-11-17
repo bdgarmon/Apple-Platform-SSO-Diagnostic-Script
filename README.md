@@ -158,6 +158,8 @@ The vendor is recognized from the extension named in the payload, and each vendo
 | **Okta** | Your org's `/device-access/api/v1/nonce`, `/oauth2/v1/token` and `/v1/auth/device-sign` ([Okta's list](https://help.okta.com/oie/en-us/content/topics/oda/macos-pw-sync/configure-psso-se-macos-generic.htm)). The org host, including a custom domain, is read from the payload's URLs and `OktaVerify.OrgUrl` | Are they reachable? Does the payload include them? (The nonce URL is required for Secure Enclave and optional for password sync.) |
 | **Omnissa Hub** | `https://<your Access tenant>/mpsso` ([Omnissa's documentation](https://docs.omnissa.com/AccessPlatformSSO/ApplePlatformSSO/)); the tenant is read from the payload | Is it reachable? Does the payload include it? |
 
+**Apple's associated-domain servers.** After the vendor tests (whenever there is a Redirect payload, and always when you run `--test-url` on its own) the script also tests `https://app-site-association.cdn-apple.com` and `https://app-site-association.networking.apple`. macOS validates every SSO domain through Apple's CDN, and Microsoft documents that these two hosts must not be blocked or TLS-inspected, so a failure here is a **FAIL** and, in a full run, triggers the "Continue?" question.
+
 After those, the script tests every **additional** Redirect URL the payload lists. If one nearly matches an expected URL it says so, for example "looks like a typo of https://login.microsoftonline.com". A Redirect payload for an extension the script has no list for has its own URLs tested. A Credential payload, such as Kerberos, has Hosts and no Redirect URLs, so it is skipped.
 
 **How each URL is judged**
@@ -297,7 +299,7 @@ Everything printed at the end of the run is also in the bundle: the `RESULT:` li
 Every check has a stable name (shown in `code` below), and the raw evidence is in `06-validation/` or the folder named in the check.
 
 **Redirect URL network tests** (the first tests of every run; see [above](#the-redirect-url-network-tests))
-- `redirect-url:<vendor>:<url>`: whether each URL is online and reachable, with the reason when it is not. Required URLs FAIL, optional and additional URLs WARN.
+- `redirect-url:<vendor>:<url>`: whether each URL is online and reachable, with the reason when it is not. Required URLs FAIL, optional and additional URLs WARN. Apple's two associated-domain servers are tested as vendor `apple` and are required.
 - `redirect-url-payload:<vendor>[:<url>]`: whether the payload lists the URLs the vendor requires. A missing URL FAILs.
 - `redirect-url-tests`: recorded when there is no Redirect-type payload to test.
 
