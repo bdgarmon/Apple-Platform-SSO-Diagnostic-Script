@@ -238,7 +238,7 @@ Plan (read-only, except sysdiagnose / hubcli archive):
   1. Redirect URL network tests, shown live: each vendor's default URLs plus the URLs your payload lists
   2. sysdiagnose                                   ($( (( SKIP_SYSDIAG )) && print 'SKIPPED' || print 'several minutes; waits if another sysdiagnose is running'))
   3. app-sso platform -s, app-sso -l, pluginkit    (run as $CONSOLE_USER)
-  4. profiles/MDM evidence for the PSSO payload    (secrets best-effort redacted)
+  4. profiles/MDM evidence for the PSSO payload, plus the MDM command timeline    (secrets best-effort redacted)
   5. unified-log slices for PSSO registration attempts + IdP extension logs
   6. $( (( TESTS_ONLY )) && print 'Hub unified log only (hubcli archive skipped by --tests-only)' || print 'Intelligent Hub logs via hubcli + Hub unified log')
   7. automated validation tests: state checks, IdP endpoints, associated domains (swcutil, AASA, Apple CDN),
@@ -597,6 +597,86 @@ profile_events() {   # <mdm log slice, --style default>  -> profile install / up
       print -r -- "    $(stamp_utc "$ts")   [device clock $ts]   ${label}${flag}"
     done)
   if [[ -n "$out" ]]; then print -r -- "$out"; else print "    (none in the log window)"; fi
+}
+
+mdm_command_timeline() {   # <mdmclient slice, --style default> -> a timeline for the findings; sets MDM_* for the checks
+  local f="$1" awkf="$STAGE/mdm_tl.awk" ev ts kind label detail result ep prev_ep prev_stamp stamp gap E_ep=0 txt shown=0 tail_ev
+  MDM_HAVE=0; MDM_ENROLL=""; MDM_SPAN=0; MDM_GAP_MAX=0; MDM_GAP_FROM=""; MDM_GAP_TO=""; MDM_N_REQ=0; MDM_N_APP=0; MDM_RELEASED=0; MDM_N_ACK=0; MDM_N_ERR=0; MDM_N_NOTNOW=0
+  [[ -s "$f" ]] || return 0
+  /bin/cat > "$awkf" <<'AWKEOF'
+function flush() {
+  if (have) { r = rres; if (rerr != "") r = r " (" rerr ")"; print rts "|REQ|" rtype "|" rdet "|" r; have = 0 }
+}
+{
+  ts = $1 " " substr($2, 1, 8) substr($2, length($2) - 4)
+  line = $0
+  if (match(line, /Processing server request: [A-Za-z]+ for: /)) {
+    flush()
+    s = line; sub(/.*Processing server request: /, "", s); sub(/ for: .*/, "", s)
+    have = 1; rts = ts; rtype = s; rdet = ""; rres = ""; rerr = ""
+  } else if (match(line, /=== CPF_InstallProfile === /)) {
+    rest = substr(line, RSTART + RLENGTH)
+    name = rest; sub(/ \(.*$/, "", name)
+    src = ""
+    if (match(rest, /\(source: '[^']*'\)/)) { src = rest; sub(/.*\(source: '/, "", src); sub(/'\).*/, "", src) }
+    if (have && rtype == "InstallProfile" && rdet == "") rdet = name
+    else print ts "|LOCAL|InstallProfile|" name " [source " src "]|"
+  } else if (match(line, /\(PUT\) \[(Acknowledged|Error|NotNow)\([A-Za-z]+\)/)) {
+    t = line; sub(/.*\(PUT\) \[/, "", t)
+    st = t; sub(/\(.*/, "", st)
+    ty = t; sub(/^[^(]*\(/, "", ty); sub(/\).*/, "", ty)
+    if (have && ty == rtype && rres == "") rres = st
+  } else if (match(line, /\[MDMClientError:[0-9]+\] /)) {
+    e = line; sub(/.*\[MDMClientError:/, "", e)
+    code = e; sub(/\].*/, "", code)
+    msg = e; sub(/^[0-9]+\] /, "", msg); sub(/>$/, "", msg); gsub(/'[^']*'/, "'<id>'", msg)
+    if (have) rerr = "MDMClientError:" code " " substr(msg, 1, 90)
+  }
+}
+END { flush() }
+AWKEOF
+  ev=$(/usr/bin/awk -f "$awkf" "$f" 2>/dev/null)
+  if [[ -z "$ev" ]]; then print "    (no MDM server requests in the log window)"; return 0; fi
+  MDM_HAVE=1
+  while IFS='|' read -r ts kind label detail result; do   # the earliest ADE enrollment made in Setup Assistant
+    if [[ "$kind" == LOCAL && "$detail" == *SetupAssistant* ]]; then MDM_ENROLL="$ts"; E_ep=$(to_epoch_tz "$ts"); break; fi
+  done <<< "$ev"
+  if [[ -n "$MDM_ENROLL" && -n "$E_ep" ]] && (( E_ep > 0 )); then
+    prev_ep=$E_ep; prev_stamp=$(stamp_utc "$MDM_ENROLL")
+    print "    ${prev_stamp}   [device clock $MDM_ENROLL]   (on the Mac) ADE enrollment installed from Setup Assistant"
+    while IFS='|' read -r ts kind label detail result; do
+      ep=$(to_epoch_tz "$ts"); [[ -z "$ep" ]] && continue
+      (( ep < E_ep )) && continue
+      (( ep > E_ep + 7200 )) && break
+      [[ "$kind" == LOCAL && "$ts" == "$MDM_ENROLL" ]] && continue
+      [[ "$detail" == *"source ManagedSettings"* ]] && continue
+      stamp=$(stamp_utc "$ts")
+      if [[ "$kind" == REQ ]]; then
+        gap=$(( ep - prev_ep ))
+        if (( gap >= 300 && shown < 120 )); then print "    ...   no server request for $(fmt_dur $gap)   ..."; fi
+        if (( gap > MDM_GAP_MAX )); then MDM_GAP_MAX=$gap; MDM_GAP_FROM="$prev_stamp"; MDM_GAP_TO="$stamp"; fi
+        prev_ep=$ep; prev_stamp="$stamp"; MDM_SPAN=$(( ep - E_ep ))
+        MDM_N_REQ=$(( MDM_N_REQ + 1 ))
+        [[ "$label" == InstallApplication* || "$label" == InstallEnterpriseApplication* ]] && MDM_N_APP=$(( MDM_N_APP + 1 ))
+        case "$result" in Acknowledged*) MDM_N_ACK=$(( MDM_N_ACK + 1 )) ;; Error*) MDM_N_ERR=$(( MDM_N_ERR + 1 )) ;; NotNow*) MDM_N_NOTNOW=$(( MDM_N_NOTNOW + 1 )) ;; esac
+        txt="$label"; [[ -n "$detail" ]] && txt="$txt: $detail"; [[ -n "$result" ]] && txt="$txt  -> $result"
+        [[ "$label" == DeviceConfigured ]] && txt="$txt   <== releases Setup Assistant"
+      else
+        txt="(on the Mac) $label: $detail"
+      fi
+      if (( shown < 120 )); then print -r -- "    ${stamp}   [device clock $ts]   $txt"; shown=$(( shown + 1 )); fi
+      if [[ "$label" == DeviceConfigured ]]; then MDM_RELEASED=1; break; fi
+    done <<< "$ev"
+    print "    Summary: ${MDM_N_REQ} server request(s) after enrollment: ${MDM_N_ACK} acknowledged, ${MDM_N_ERR} error, ${MDM_N_NOTNOW} NotNow; ${MDM_N_APP} app install request(s); longest quiet gap $(fmt_dur $MDM_GAP_MAX)$( (( MDM_GAP_MAX >= 300 )) && print " (${MDM_GAP_FROM} to ${MDM_GAP_TO})"), $(fmt_dur $MDM_SPAN) from enrollment to the last command; DeviceConfigured $( (( MDM_RELEASED )) && print 'seen' || print 'not seen in the log window')."
+  else
+    tail_ev=$(print -r -- "$ev" | /usr/bin/grep '|REQ|' | /usr/bin/tail -20)
+    print "    (no ADE enrollment from Setup Assistant in this log window; the most recent server requests follow. Use --log-window to reach further back.)"
+    while IFS='|' read -r ts kind label detail result; do
+      [[ -z "$ts" ]] && continue
+      txt="$label"; [[ -n "$detail" ]] && txt="$txt: $detail"; [[ -n "$result" ]] && txt="$txt  -> $result"
+      print -r -- "    $(stamp_utc "$ts")   [device clock $ts]   $txt"
+    done <<< "$tail_ev"
+  fi
 }
 
 # ---- automated PSSO validation helpers ----
@@ -1516,6 +1596,11 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
     dx "The Microsoft sign-in step failed with MSAL error -51116, 'The server has redirected to a non-https url' (${nonhttps:-0} matching line(s) in the extension log)." \
        "Microsoft's sign-in service does not redirect to plain http, so something between this Mac and Microsoft (a web filter, VPN, proxy or security agent) is probably answering instead." \
        "Look at the network-agent lines in the list below. Ask your security team to repeat the registration with those products off, or to exempt Microsoft sign-in and the Company Portal SSO extension. Run this script with --tests-only right after the next attempt."
+  fi
+  if vhas 'WARN\|mdm-setup-gap'; then
+    dx "The MDM server went quiet for a long time after this Mac enrolled in Setup Assistant." \
+       "With Await Configuration on, Setup Assistant holds the Mac until the MDM server sends DeviceConfigured, and Apple documents no timeout, so a long quiet gap is normally the server not sending, not the Mac, unless an app was still downloading or installing. Platform SSO is not involved until its profile arrives." \
+       "Open this device's command queue in your MDM console for the times in the mdm-setup-gap line and see what was pending or sent twice, and what the server was waiting for (for example an app it did not see as installed). The MDM command timeline in the findings lists every command the Mac received. With Workspace ONE UEM's 'PSSO during Setup Assistant' ADE setting, repeat the enrollment with it off to see whether the gap disappears."
   fi
   rf=$(/usr/bin/grep -E '^FAIL\|redirect-url:' "$VAL" 2>/dev/null | /usr/bin/grep -v '^FAIL|redirect-url:apple:')
   af=$(/usr/bin/grep -E '^FAIL\|(domain-association|aasa-origin|aasa-cdn):' "$VAL" 2>/dev/null | /usr/bin/grep -vE '^FAIL\|aasa-cdn:[^|]*\|Apple CDN returned HTTP 000')
@@ -2499,6 +2584,11 @@ PRED_MDM='(process == "mdmclient" OR process == "profiled") AND (eventMessage CO
 capture "$D3/log-show-mdm-profile-install.txt" \
         /usr/bin/log show --info --debug --style default --last "$LOG_WINDOW" --predicate "$PRED_MDM"
 
+# everything the MDM server asked this Mac to do, and how the Mac answered (no polling noise): shows where an enrollment waited
+PRED_MDMCMD='process == "mdmclient" AND (eventMessage CONTAINS[c] "Processing server request" OR eventMessage CONTAINS[c] "CPF_InstallProfile" OR eventMessage CONTAINS[c] "MDMClientError" OR eventMessage CONTAINS[c] "(PUT) [Acknowledged(" OR eventMessage CONTAINS[c] "(PUT) [Error(" OR eventMessage CONTAINS[c] "(PUT) [NotNow(")'
+capture "$D3/log-show-mdm-commands.txt" \
+        /usr/bin/log show --info --debug --style default --last "$LOG_WINDOW" --predicate "$PRED_MDMCMD"
+
 # =============================================================================
 # 04 - proof the device attempted PSSO registration
 # =============================================================================
@@ -2512,7 +2602,7 @@ capture "$D4/log-show-appsso-PODiagnostics.txt" \
         /usr/bin/log show --info --debug --style compact --last "$LOG_WINDOW" --predicate "$PRED_POD"
 capture "$D4/log-show-registration-timeline-with-tz.txt" \
         /usr/bin/log show --info --debug --style default --last "$LOG_WINDOW" --predicate "$PRED_TL"
-for f in "$D3/log-show-mdm-profile-install.txt" "$D4"/log-show-*.txt; do redact_log_secrets "$f"; done
+for f in "$D3/log-show-mdm-profile-install.txt" "$D3/log-show-mdm-commands.txt" "$D4"/log-show-*.txt; do redact_log_secrets "$f"; done
 log "  OAuth code/token URL parameters in log slices redacted"
 {
   print "# PSSO payload settings as logged by AppSSO (the 'profiles' command does not show these settings)."
@@ -2591,6 +2681,23 @@ if [[ -s "$RURL_Q" ]]; then   # the Redirect URL tests ran first; their results 
   while IFS='|' read -r st nm det; do [[ -z "$st" ]] && continue; vcheck "$st" "$nm" "$det"; done < "$RURL_Q"
 fi
 [[ -s "$RURL_EV" ]] && /bin/cp "$RURL_EV" "$D6/redirect-url-tests.txt"
+
+# --- MDM command timeline: what the MDM server asked this Mac to do (where did an enrollment wait?)
+AWAIT=$(/usr/bin/awk '/AwaitDeviceConfigured/ { gsub(/[^0-9]/, "", $NF); print $NF; exit }' "$D3/profiles-show-enrollment.txt" 2>/dev/null)
+case "$AWAIT" in
+  1) vcheck INFO mdm-await-configuration "the enrollment profile has AwaitDeviceConfigured = 1: Setup Assistant holds the Mac until the MDM server sends DeviceConfigured, and Apple documents no timeout for that wait" ;;
+  0) vcheck INFO mdm-await-configuration "the enrollment profile has AwaitDeviceConfigured = 0: Setup Assistant does not wait for the MDM server" ;;
+esac
+MDM_TL="$STAGE/mdm-command-timeline.txt"
+mdm_command_timeline "$D3/log-show-mdm-commands.txt" > "$MDM_TL"
+if (( MDM_HAVE )) && [[ -n "$MDM_ENROLL" ]]; then
+  if (( MDM_GAP_MAX >= 600 )); then
+    vcheck WARN mdm-setup-gap "after the ADE enrollment in Setup Assistant ($(stamp_utc "$MDM_ENROLL")) the MDM server sent no request for $(fmt_dur $MDM_GAP_MAX) (from ${MDM_GAP_FROM} to ${MDM_GAP_TO}), and $(fmt_dur $MDM_SPAN) passed from enrollment to its last command; ${MDM_N_REQ} request(s) in all, ${MDM_N_APP} of them app installs; DeviceConfigured $( (( MDM_RELEASED )) && print seen || print 'not seen in the log window'). A long app download or install can explain a gap like this; if none was running, the server was waiting on something and not sending"
+  else
+    vcheck PASS mdm-setup-gap "after the ADE enrollment in Setup Assistant the MDM server's longest quiet gap was $(fmt_dur $MDM_GAP_MAX) (${MDM_N_REQ} request(s))"
+  fi
+  (( MDM_N_NOTNOW > 0 )) && vcheck INFO mdm-notnow "${MDM_N_NOTNOW} command(s) were answered NotNow (the Mac told the server to retry later) while in Setup Assistant"
+fi
 EXT_ID=$(state_val extensionIdentifier); TEAM_ID=$(state_val extensionTeamIdentifier)
 if [[ -z "$TEAM_ID" && -n "$EXT_ID" ]]; then   # the state reports no team until registration completes; the payload names it
   P_EXT_ALL=$(xml_values "$XMLP" ExtensionIdentifier | /usr/bin/sort -u); P_TEAM_ALL=$(xml_values "$XMLP" TeamIdentifier | /usr/bin/sort -u)
@@ -2765,6 +2872,11 @@ log "== quick findings"
     print "[Company Portal pkg] receipt not found"
   fi
   print ""
+  if [[ -s "$MDM_TL" ]]; then
+    print "[MDM command timeline - what the MDM server asked this Mac to do (UTC converted from each line's own offset)]"
+    /bin/cat "$MDM_TL"
+    print ""
+  fi
 
   print "[app-sso platform -s]"
   for k in extensionIdentifier extensionTeamIdentifier loginType registrationCompleted state lastEncryptionKeyChange authGracePeriodStart lastLoginDate sharedDeviceKeys; do
@@ -2905,7 +3017,7 @@ typeset -a RENAMES; RENAMES=()
 /bin/mkdir -p "$D6/network-probes"
 for f in "$D6"/net-*; do [[ -e "$f" ]] && /bin/mv "$f" "$D6/network-probes/"; done
 number_files "$D2" app-sso-platform-state.txt app-sso-listrealms.txt local-account-dscl.txt local-account-id.txt local-accounts-list.txt local-account-psso-link.txt pluginkit-sso-related.txt pluginkit-auth-service-extension.txt pluginkit-all.txt app-sso-help.txt
-number_files "$D3" profiles-status-enrollment.txt profiles-show-enrollment.txt profiles-list.txt profiles-show-configuration.txt profiles-show-all.txt profiles-show-all-xml.txt psso-payload-extract.txt log-show-mdm-profile-install.txt configurationprofiles-dir-listing.txt
+number_files "$D3" profiles-status-enrollment.txt profiles-show-enrollment.txt profiles-list.txt profiles-show-configuration.txt profiles-show-all.txt profiles-show-all-xml.txt psso-payload-extract.txt log-show-mdm-profile-install.txt log-show-mdm-commands.txt configurationprofiles-dir-listing.txt
 number_files "$D4" log-show-registration-timeline-with-tz.txt log-show-appsso-PODiagnostics.txt psso-config-seen-by-appsso.txt username-trace.txt log-show-psso-all.txt idp-extension-files
 number_files "$D5" hubcli-logs-collect.txt hubcli-archive log-show-hub.txt log-show-hub-health-with-tz.txt hubcli-help.txt hubcli-logs-help.txt airwatch-dir-listing.txt files
 number_files "$D6" redirect-url-tests.txt swcutil-show.txt sntp-time.apple.com.txt scutil-proxy.txt pluginkit-idp-extension-detail.txt app-sso-platform-messages.txt klist.txt sso-crash-reports.txt network-agents.txt systemextensions-list.txt nc-list.txt appsso-log-config.txt safari-navigation-1.txt safari-navigation-2.txt safari-navigation-3.txt handoff-url-1.txt handoff-url-2.txt handoff-url-3.txt handoff-url-4.txt handoff-url-5.txt handoff-url-6.txt handoff-url-7.txt handoff-url-8.txt handoff-url-9.txt handoff-url-10.txt kerberos-url-1.txt kerberos-url-2.txt kerberos-url-3.txt network-probes
