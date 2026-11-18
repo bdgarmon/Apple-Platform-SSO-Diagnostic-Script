@@ -1,5 +1,5 @@
 #!/bin/zsh
-# pssodiagv312.zsh v3.1.2
+# pssodiagv313.zsh v3.1.3
 # Options:
 #   -y, --yes               skip the confirmation prompt
 #   -n, --dry-run           print the plan and exit; collect nothing
@@ -16,7 +16,7 @@
 #       --open-fda-settings open System Settings > Full Disk Access, print the steps, exit
 #   -h, --help
 
-SCRIPT_VERSION="3.1.2"
+SCRIPT_VERSION="3.1.3"
 SCRIPT_PATH=${0:A}
 SCRIPT_DIR=${SCRIPT_PATH:h}
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -661,8 +661,8 @@ AWKEOF
 mdm_command_timeline() {   # <mdmclient slice> [install events] -> one timeline for the findings; sets MDM_* for the checks
   local f="$1" inst="${2:-}" cm="$STAGE/tl_common.awk" ma="$STAGE/tl_mdm.awk" ia="$STAGE/tl_inst.awk" all="$STAGE/tl_all.txt" win="$STAGE/tl_win.txt"
   local ep utc ts kind label detail result sig txt gap prev_ep prev_utc E_ep=0 E_utc line shown=0 released=0 sso=0 appcmd=0 sso_ep=0 sso_utc="" dc_ep=0 dc_utc="" inst_list="" pkg_list="" omitted=0
-  local appcmds=0 cmdq="" first note n_inst=0 n_pair=0 n_nopair=0
-  MDM_HAVE=0; MDM_ENROLL=""; MDM_SPAN=0; MDM_GAP_MAX=0; MDM_GAP_FROM=""; MDM_GAP_TO=""; MDM_N_REQ=0; MDM_N_APP=0; MDM_RELEASED=0; MDM_N_ACK=0; MDM_N_ERR=0; MDM_N_NOTNOW=0; MDM_REPEATS=""; MDM_PKG_REPEATS=""; MDM_SSO_ORDER=""; MDM_INST_SUMMARY=""
+  local appcmds=0 cmdq="" first note n_inst=0 n_pair=0 n_nopair=0 isq=0
+  MDM_HAVE=0; MDM_ENROLL=""; MDM_SPAN=0; MDM_GAP_MAX=0; MDM_GAP_FROM=""; MDM_GAP_TO=""; MDM_N_REQ=0; MDM_N_APP=0; MDM_RELEASED=0; MDM_N_ACK=0; MDM_N_ERR=0; MDM_N_NOTNOW=0; MDM_REPEATS=""; MDM_PKG_REPEATS=""; MDM_SSO_ORDER=""; MDM_INST_SUMMARY=""; MDM_N_DELIV=0; MDM_N_QRY=0; MDM_SSO_DELAY=-1; MDM_SSO_UTC=""
   [[ -s "$f" ]] || return 0
   tl_write_common_awk
   /bin/cat > "$ma" <<'AWKEOF'
@@ -746,13 +746,15 @@ AWKEOF
       [[ "$detail" == *"source ManagedSettings"* ]] && continue
       sso=0; [[ "$kind" == REQ && "$label" == InstallProfile && "$detail" == *SSO* ]] && sso=1
       appcmd=0; [[ "$kind" == REQ && ( "$label" == InstallApplication* || "$label" == InstallEnterpriseApplication* ) ]] && appcmd=1
+      isq=0   # an inventory poll (the server asking the Mac for a list or status) is not delivery; UEM sends one every few minutes
+      if [[ "$kind" == REQ ]]; then case "$label" in *List|*Info|*Information|*Status|Restrictions|AvailableOSUpdates) isq=1 ;; esac; fi
       if (( released )); then   # after the release only app installs, app-install commands and the SSO profile still matter
         [[ "$kind" == INSTREQ || "$kind" == INSTALLED || "$sso" == 1 || "$appcmd" == 1 ]] || continue
       fi
       (( appcmd )) && cmdq+="${ep} "
-      if (( ! released )) && [[ "$kind" == REQ || "$kind" == INSTREQ ]]; then   # server activity: a command, or an MDM-managed install it started
+      if (( ! released )) && [[ ( "$kind" == REQ && "$isq" == 0 ) || "$kind" == INSTREQ ]]; then   # delivery activity: a delivery command, or an MDM-managed install it started
         gap=$(( ep - prev_ep ))
-        if (( gap >= 300 && shown < 120 )); then print "    ...   no server activity for $(fmt_dur $gap)   ..."; fi
+        if (( gap >= 300 && shown < 120 )); then print "    ...   no delivery activity for $(fmt_dur $gap)   ..."; fi
         if (( gap > MDM_GAP_MAX )); then MDM_GAP_MAX=$gap; MDM_GAP_FROM="$prev_utc"; MDM_GAP_TO="$utc"; fi
         prev_ep=$ep; prev_utc="$utc"; MDM_SPAN=$(( ep - E_ep ))
       fi
@@ -760,6 +762,7 @@ AWKEOF
         REQ)
           if (( ! released )); then
             MDM_N_REQ=$(( MDM_N_REQ + 1 ))
+            if (( isq )); then MDM_N_QRY=$(( MDM_N_QRY + 1 )); else MDM_N_DELIV=$(( MDM_N_DELIV + 1 )); fi
             [[ "$label" == InstallApplication* || "$label" == InstallEnterpriseApplication* ]] && MDM_N_APP=$(( MDM_N_APP + 1 ))
             case "$result" in Acknowledged*) MDM_N_ACK=$(( MDM_N_ACK + 1 )) ;; Error*) MDM_N_ERR=$(( MDM_N_ERR + 1 )) ;; NotNow*) MDM_N_NOTNOW=$(( MDM_N_NOTNOW + 1 )) ;; esac
           fi
@@ -784,10 +787,11 @@ AWKEOF
       else omitted=$(( omitted + 1 )); fi
     done < "$win"
     (( omitted )) && print "    (${omitted} more event(s) omitted; the raw slices have them all)"
-    print "    Summary: ${MDM_N_REQ} server request(s) after enrollment: ${MDM_N_ACK} acknowledged, ${MDM_N_ERR} error, ${MDM_N_NOTNOW} NotNow; ${MDM_N_APP} app install request(s); longest quiet gap $(fmt_dur $MDM_GAP_MAX)$( (( MDM_GAP_MAX >= 300 )) && print " (${MDM_GAP_FROM} to ${MDM_GAP_TO})"), $(fmt_dur $MDM_SPAN) from enrollment to the last server activity; DeviceConfigured $( (( MDM_RELEASED )) && print 'seen' || print 'not seen in the log window')."
+    print "    Summary: ${MDM_N_REQ} server request(s) after enrollment (${MDM_N_DELIV} delivery, ${MDM_N_QRY} inventory poll(s)): ${MDM_N_ACK} acknowledged, ${MDM_N_ERR} error, ${MDM_N_NOTNOW} NotNow; ${MDM_N_APP} app install request(s); longest stretch without a delivery command or install $(fmt_dur $MDM_GAP_MAX)$( (( MDM_GAP_MAX >= 300 )) && print " (${MDM_GAP_FROM} to ${MDM_GAP_TO})"), $(fmt_dur $MDM_SPAN) from enrollment to the last delivery activity; DeviceConfigured $( (( MDM_RELEASED )) && print 'seen' || print 'not seen in the log window')."
     if (( appcmds > 0 )); then MDM_INST_SUMMARY="${n_inst} MDM-managed install(s) started: ${n_pair} preceded by a server app-install command, ${n_nopair} with none seen"
     elif (( n_inst > 0 )); then MDM_INST_SUMMARY="${n_inst} MDM-managed install(s) started; this slice has no app-install command lines, so they cannot be matched to server commands"; fi
     [[ -n "$MDM_INST_SUMMARY" ]] && print "    App installs: ${MDM_INST_SUMMARY}."
+    (( sso_ep )) && { MDM_SSO_DELAY=$(( sso_ep - E_ep )); MDM_SSO_UTC="$sso_utc"; }
     if (( sso_ep == 0 )); then MDM_SSO_ORDER="the SSO profile's install was not seen in this window; DeviceConfigured $( (( dc_ep )) && print 'was seen' || print 'was not seen')"
     elif (( dc_ep == 0 )); then MDM_SSO_ORDER="the SSO profile was installed at ${sso_utc}; DeviceConfigured was not seen in the log window"
     elif (( sso_ep <= dc_ep )); then MDM_SSO_ORDER="the SSO profile was installed $(fmt_dur $(( dc_ep - sso_ep ))) before DeviceConfigured (${sso_utc} and ${dc_utc})"
@@ -1717,7 +1721,7 @@ compute_result() {   # sets RESULT_CODE and RESULT_LINE (one plain sentence) and
 }
 
 build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: what we see, what it means, what to do.
-  local n=0 nonhttps outcome LA_TIME shown responded vhas doms d sw swv apps has_psso=0 af rf
+  local n=0 nonhttps outcome LA_TIME shown responded vhas doms d sw swv apps has_psso=0 af rf hint
   psso_configured && has_psso=1
   vhas() { /usr/bin/grep -qE "^$1" "$VAL" 2>/dev/null; }
   dx() { n=$(( n + 1 )); print "  ${n}. $1"; print "       What it means: $2"; print "       What to do:    $3"; }
@@ -1729,10 +1733,12 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
        "Microsoft's sign-in service does not redirect to plain http, so something between this Mac and Microsoft (a web filter, VPN, proxy or security agent) is probably answering instead." \
        "Look at the network-agent lines in the list below. Ask your security team to repeat the registration with those products off, or to exempt Microsoft sign-in and the Company Portal SSO extension. Run this script with --tests-only right after the next attempt."
   fi
-  if vhas 'WARN\|mdm-setup-gap'; then
-    dx "The MDM server went quiet for a long time after this Mac enrolled in Setup Assistant." \
-       "With Await Configuration on, Setup Assistant holds the Mac until the MDM server sends DeviceConfigured, and Apple documents no timeout, so a long quiet gap is normally the server not sending, not the Mac, unless an app was still downloading or installing. Platform SSO is not involved until its profile arrives." \
-       "Open this device's command queue in your MDM console for the times in the mdm-setup-gap line and see what was pending or sent twice, and what the server was waiting for (for example an app it did not see as installed). The MDM command timeline in the findings lists every command the Mac received. With Workspace ONE UEM's 'PSSO during Setup Assistant' ADE setting, repeat the enrollment with it off to see whether the gap disappears."
+  if vhas 'WARN\|mdm-(setup-gap|sso-profile-delay)'; then
+    hint=""
+    /usr/bin/grep -E '^WARN\|mdm-(setup-gap|sso-profile-delay)' "$VAL" 2>/dev/null | /usr/bin/grep -qE 'installed more than once|same installer package' && hint=" The same app being sent again before the release usually means the server did not see the app it was waiting for as installed. With Workspace ONE UEM, check the ADE profile's PSSO App Bundle ID: it must be the app's own bundle ID (for Company Portal, com.microsoft.CompanyPortalMac), not the extension identifier (com.microsoft.CompanyPortalMac.ssoextension). In one lab case that mix-up held the SSO profile back for 22 minutes until it was corrected."
+    dx "Setup Assistant waited a long time for the MDM server after this Mac enrolled." \
+       "With Await Configuration on, Setup Assistant holds the Mac until the MDM server sends DeviceConfigured, and Apple documents no timeout, so a long wait is normally the server not sending, not the Mac, unless an app was still downloading or installing. Platform SSO is not involved until its profile arrives." \
+       "Open this device's command queue in your MDM console for the times in the mdm-setup-gap and mdm-sso-profile-delay lines and see what was pending or sent twice, and what the server was waiting for (for example an app it did not see as installed). The MDM command and app install timeline in the findings lists every command the Mac received and every app it installed.${hint}"
   fi
   rf=$(/usr/bin/grep -E '^FAIL\|redirect-url:' "$VAL" 2>/dev/null | /usr/bin/grep -v '^FAIL|redirect-url:apple:')
   af=$(/usr/bin/grep -E '^FAIL\|(domain-association|aasa-origin|aasa-cdn):' "$VAL" 2>/dev/null | /usr/bin/grep -vE '^FAIL\|aasa-cdn:[^|]*\|Apple CDN returned HTTP 000')
@@ -2828,9 +2834,16 @@ MDM_TL="$STAGE/mdm-command-timeline.txt"
 mdm_command_timeline "$D3/log-show-mdm-commands.txt" "$D3/install-log-events.txt" > "$MDM_TL"
 if (( MDM_HAVE )) && [[ -n "$MDM_ENROLL" ]]; then
   if (( MDM_GAP_MAX >= 600 )); then
-    vcheck WARN mdm-setup-gap "after the ADE enrollment in Setup Assistant ($(stamp_utc "$MDM_ENROLL")) the MDM server sent no request for $(fmt_dur $MDM_GAP_MAX) (from ${MDM_GAP_FROM} to ${MDM_GAP_TO}), and $(fmt_dur $MDM_SPAN) passed from enrollment to its last command; ${MDM_N_REQ} request(s) in all, ${MDM_N_APP} of them app installs$( [[ -n "$MDM_REPEATS" ]] && print "; installed more than once: ${MDM_REPEATS}")$( [[ -n "$MDM_PKG_REPEATS" ]] && print "; same installer package ran again: ${MDM_PKG_REPEATS}"); ${MDM_SSO_ORDER}. A long app download or install can explain a gap like this; if none was running, the server was waiting on something and not sending"
+    vcheck WARN mdm-setup-gap "after the ADE enrollment in Setup Assistant ($(stamp_utc "$MDM_ENROLL")) the MDM server sent no delivery command (a profile or app install) for $(fmt_dur $MDM_GAP_MAX) (from ${MDM_GAP_FROM} to ${MDM_GAP_TO}), and $(fmt_dur $MDM_SPAN) passed from enrollment to its last delivery activity; ${MDM_N_DELIV} delivery command(s) and ${MDM_N_QRY} inventory poll(s) in all, ${MDM_N_APP} of the commands app installs$( [[ -n "$MDM_REPEATS" ]] && print "; installed more than once: ${MDM_REPEATS}")$( [[ -n "$MDM_PKG_REPEATS" ]] && print "; same installer package ran again: ${MDM_PKG_REPEATS}"); ${MDM_SSO_ORDER}. A long app download or install can explain a gap like this; if none was running, the server was waiting on something and not sending"
   else
-    vcheck PASS mdm-setup-gap "after the ADE enrollment in Setup Assistant the MDM server's longest quiet gap was $(fmt_dur $MDM_GAP_MAX) (${MDM_N_REQ} request(s))"
+    vcheck PASS mdm-setup-gap "after the ADE enrollment in Setup Assistant the longest stretch without a delivery command or install was $(fmt_dur $MDM_GAP_MAX) (${MDM_N_DELIV} delivery command(s), ${MDM_N_QRY} inventory poll(s))"
+  fi
+  if (( MDM_SSO_DELAY >= 300 )); then
+    vcheck WARN mdm-sso-profile-delay "the SSO profile reached the Mac $(fmt_dur $MDM_SSO_DELAY) after the ADE enrollment ($(stamp_utc "$MDM_ENROLL") to ${MDM_SSO_UTC}); Setup Assistant waits for the MDM server in the meantime (AwaitDeviceConfigured)$( [[ -n "$MDM_REPEATS" ]] && print "; installed more than once before the release: ${MDM_REPEATS}")"
+  elif (( MDM_SSO_DELAY >= 0 )); then
+    vcheck PASS mdm-sso-profile-delay "the SSO profile reached the Mac $(fmt_dur $MDM_SSO_DELAY) after the ADE enrollment"
+  else
+    vcheck INFO mdm-sso-profile-delay "no SSO profile install was seen after the ADE enrollment in this log window"
   fi
   (( MDM_N_NOTNOW > 0 )) && vcheck INFO mdm-notnow "${MDM_N_NOTNOW} command(s) were answered NotNow (the Mac told the server to retry later) while in Setup Assistant"
 fi
