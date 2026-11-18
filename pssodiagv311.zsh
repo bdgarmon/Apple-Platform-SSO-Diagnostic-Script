@@ -1,5 +1,5 @@
 #!/bin/zsh
-# pssodiagv310.zsh v3.1.0
+# pssodiagv311.zsh v3.1.1
 # Options:
 #   -y, --yes               skip the confirmation prompt
 #   -n, --dry-run           print the plan and exit; collect nothing
@@ -16,7 +16,7 @@
 #       --open-fda-settings open System Settings > Full Disk Access, print the steps, exit
 #   -h, --help
 
-SCRIPT_VERSION="3.1.0"
+SCRIPT_VERSION="3.1.1"
 SCRIPT_PATH=${0:A}
 SCRIPT_DIR=${SCRIPT_PATH:h}
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -238,7 +238,7 @@ Plan (read-only, except sysdiagnose / hubcli archive):
   1. Redirect URL network tests, shown live: each vendor's default URLs plus the URLs your payload lists
   2. sysdiagnose                                   ($( (( SKIP_SYSDIAG )) && print 'SKIPPED' || print 'several minutes; waits if another sysdiagnose is running'))
   3. app-sso platform -s, app-sso -l, pluginkit    (run as $CONSOLE_USER)
-  4. profiles/MDM evidence for the PSSO payload, plus the MDM command timeline    (secrets best-effort redacted)
+  4. profiles/MDM evidence for the PSSO payload, plus the MDM command and app install timeline    (secrets best-effort redacted)
   5. unified-log slices for PSSO registration attempts + IdP extension logs
   6. $( (( TESTS_ONLY )) && print 'Hub unified log only (hubcli archive skipped by --tests-only)' || print 'Intelligent Hub logs via hubcli + Hub unified log')
   7. automated validation tests: state checks, IdP endpoints, associated domains (swcutil, AASA, Apple CDN),
@@ -599,13 +599,53 @@ profile_events() {   # <mdm log slice, --style default>  -> profile install / up
   if [[ -n "$out" ]]; then print -r -- "$out"; else print "    (none in the log window)"; fi
 }
 
-mdm_command_timeline() {   # <mdmclient slice, --style default> -> a timeline for the findings; sets MDM_* for the checks
-  local f="$1" awkf="$STAGE/mdm_tl.awk" ev ts kind label detail result ep prev_ep prev_stamp stamp gap E_ep=0 txt shown=0 tail_ev
-  MDM_HAVE=0; MDM_ENROLL=""; MDM_SPAN=0; MDM_GAP_MAX=0; MDM_GAP_FROM=""; MDM_GAP_TO=""; MDM_N_REQ=0; MDM_N_APP=0; MDM_RELEASED=0; MDM_N_ACK=0; MDM_N_ERR=0; MDM_N_NOTNOW=0
+mdm_command_timeline() {   # <mdmclient slice> [install events] -> one timeline for the findings; sets MDM_* for the checks
+  local f="$1" inst="${2:-}" cm="$STAGE/tl_common.awk" ma="$STAGE/tl_mdm.awk" ia="$STAGE/tl_inst.awk" all="$STAGE/tl_all.txt" win="$STAGE/tl_win.txt"
+  local ep utc ts kind label detail result txt gap prev_ep prev_utc E_ep=0 E_utc line shown=0 released=0 sso=0 sso_ep=0 sso_utc="" dc_ep=0 dc_utc="" inst_list="" omitted=0
+  MDM_HAVE=0; MDM_ENROLL=""; MDM_SPAN=0; MDM_GAP_MAX=0; MDM_GAP_FROM=""; MDM_GAP_TO=""; MDM_N_REQ=0; MDM_N_APP=0; MDM_RELEASED=0; MDM_N_ACK=0; MDM_N_ERR=0; MDM_N_NOTNOW=0; MDM_REPEATS=""; MDM_SSO_ORDER=""
   [[ -s "$f" ]] || return 0
-  /bin/cat > "$awkf" <<'AWKEOF'
-function flush() {
-  if (have) { r = rres; if (rerr != "") r = r " (" rerr ")"; print rts "|REQ|" rtype "|" rdet "|" r; have = 0 }
+  /bin/cat > "$cm" <<'AWKEOF'
+function days_from_civil(y, m, d,   era, yoe, doy, doe) {
+  if (m <= 2) y -= 1
+  era = int((y >= 0 ? y : y - 399) / 400)
+  yoe = y - era * 400
+  doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1
+  doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+  return era * 146097 + doe - 719468
+}
+function epoch_of(ts,   y, mo, dd, hh, mi, ss, sign, oh, om, offs) {
+  y = substr(ts, 1, 4) + 0; mo = substr(ts, 6, 2) + 0; dd = substr(ts, 9, 2) + 0
+  hh = substr(ts, 12, 2) + 0; mi = substr(ts, 15, 2) + 0; ss = substr(ts, 18, 2) + 0
+  sign = substr(ts, 20, 1); oh = substr(ts, 21, 2) + 0; om = substr(ts, 23, 2) + 0
+  offs = (oh * 3600 + om * 60) * (sign == "-" ? -1 : 1)
+  return days_from_civil(y, mo, dd) * 86400 + hh * 3600 + mi * 60 + ss - offs
+}
+function civil_from_days(z,   era, doe, yoe, y, doy, mp, d, m) {
+  z += 719468
+  era = int((z >= 0 ? z : z - 146096) / 146097)
+  doe = z - era * 146097
+  yoe = int((doe - int(doe / 1460) + int(doe / 36524) - int(doe / 146096)) / 365)
+  y = yoe + era * 400
+  doy = doe - (365 * yoe + int(yoe / 4) - int(yoe / 100))
+  mp = int((5 * doy + 2) / 153)
+  d = doy - int((153 * mp + 2) / 5) + 1
+  m = mp + (mp < 10 ? 3 : -9)
+  CY = y + (m <= 2 ? 1 : 0); CM = m; CD = d
+}
+function utc_string(e,   days, rem) {
+  days = int(e / 86400); rem = e - days * 86400
+  if (rem < 0) { rem += 86400; days -= 1 }
+  civil_from_days(days)
+  return sprintf("%02d-%02d-%04d %02d:%02d:%02d UTC", CM, CD, CY, int(rem / 3600), int((rem % 3600) / 60), rem % 60)
+}
+function emit(t, kind, label, detail, result,   e) {
+  e = epoch_of(t)
+  print e "|" utc_string(e) "|" t "|" kind "|" label "|" detail "|" result
+}
+AWKEOF
+  /bin/cat > "$ma" <<'AWKEOF'
+function flush(   r) {
+  if (have) { r = rres; if (rerr != "") r = r " (" rerr ")"; emit(rts, "REQ", rtype, rdet, r); have = 0 }
 }
 {
   ts = $1 " " substr($2, 1, 8) substr($2, length($2) - 4)
@@ -620,7 +660,7 @@ function flush() {
     src = ""
     if (match(rest, /\(source: '[^']*'\)/)) { src = rest; sub(/.*\(source: '/, "", src); sub(/'\).*/, "", src) }
     if (have && rtype == "InstallProfile" && rdet == "") rdet = name
-    else print ts "|LOCAL|InstallProfile|" name " [source " src "]|"
+    else emit(ts, "LOCAL", "InstallProfile", name " [source " src "]", "")
   } else if (match(line, /\(PUT\) \[(Acknowledged|Error|NotNow)\([A-Za-z]+\)/)) {
     t = line; sub(/.*\(PUT\) \[/, "", t)
     st = t; sub(/\(.*/, "", st)
@@ -635,47 +675,83 @@ function flush() {
 }
 END { flush() }
 AWKEOF
-  ev=$(/usr/bin/awk -f "$awkf" "$f" 2>/dev/null)
-  if [[ -z "$ev" ]]; then print "    (no MDM server requests in the log window)"; return 0; fi
+  /bin/cat > "$ia" <<'AWKEOF'
+{
+  if ($1 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) next
+  off = substr($2, 9); if (length(off) == 3) off = off "00"
+  ts = $1 " " substr($2, 1, 8) off
+  if (index($0, "MDMManagedAppInstall=YES") > 0) {
+    n = $0; sub(/.*PKInstallRequest </, "", n); sub(/ package.*/, "", n)
+    emit(ts, "INSTREQ", "MDM-managed app install started", n " package(s)", "")
+  } else if (match($0, /installd\[[0-9]+\]: Installed "/)) {
+    s = $0; sub(/.*installd\[[0-9]+\]: Installed "/, "", s)
+    name = s; sub(/".*/, "", name); if (name == "") name = "(unnamed package)"
+    ver = s; if (sub(/^[^"]*" \(/, "", ver)) { sub(/\).*/, "", ver) } else ver = ""
+    emit(ts, "INSTALLED", "installed", (ver != "" ? name " " ver : name), "")
+  }
+}
+AWKEOF
+  { /usr/bin/awk -f "$cm" -f "$ma" "$f"; [[ -s "$inst" ]] && /usr/bin/awk -f "$cm" -f "$ia" "$inst"; } 2>/dev/null | /usr/bin/sort -n -s -t'|' -k1,1 > "$all"
+  if ! /usr/bin/grep -qF -e '|REQ|' -e '|LOCAL|' "$all"; then print "    (no MDM server requests in the log window)"; return 0; fi
   MDM_HAVE=1
-  while IFS='|' read -r ts kind label detail result; do   # the earliest ADE enrollment made in Setup Assistant
-    if [[ "$kind" == LOCAL && "$detail" == *SetupAssistant* ]]; then MDM_ENROLL="$ts"; E_ep=$(to_epoch_tz "$ts"); break; fi
-  done <<< "$ev"
-  if [[ -n "$MDM_ENROLL" && -n "$E_ep" ]] && (( E_ep > 0 )); then
-    prev_ep=$E_ep; prev_stamp=$(stamp_utc "$MDM_ENROLL")
-    print "    ${prev_stamp}   [device clock $MDM_ENROLL]   (on the Mac) ADE enrollment installed from Setup Assistant"
-    while IFS='|' read -r ts kind label detail result; do
-      ep=$(to_epoch_tz "$ts"); [[ -z "$ep" ]] && continue
-      (( ep < E_ep )) && continue
-      (( ep > E_ep + 7200 )) && break
+  line=$(/usr/bin/awk -F'|' '$4 == "LOCAL" && $6 ~ /SetupAssistant/ { print; exit }' "$all")   # the earliest ADE enrollment made in Setup Assistant
+  if [[ -n "$line" ]]; then
+    IFS='|' read -r E_ep E_utc MDM_ENROLL _k _l _d _r <<< "$line"
+    /usr/bin/awk -F'|' -v a="$E_ep" -v b="$(( E_ep + 7200 ))" '$1 + 0 >= a + 0 && $1 + 0 <= b + 0' "$all" > "$win"
+    prev_ep=$E_ep; prev_utc="$E_utc"
+    print "    ${E_utc}   [device clock $MDM_ENROLL]   (on the Mac) ADE enrollment installed from Setup Assistant"
+    while IFS='|' read -r ep utc ts kind label detail result; do
       [[ "$kind" == LOCAL && "$ts" == "$MDM_ENROLL" ]] && continue
       [[ "$detail" == *"source ManagedSettings"* ]] && continue
-      stamp=$(stamp_utc "$ts")
-      if [[ "$kind" == REQ ]]; then
-        gap=$(( ep - prev_ep ))
-        if (( gap >= 300 && shown < 120 )); then print "    ...   no server request for $(fmt_dur $gap)   ..."; fi
-        if (( gap > MDM_GAP_MAX )); then MDM_GAP_MAX=$gap; MDM_GAP_FROM="$prev_stamp"; MDM_GAP_TO="$stamp"; fi
-        prev_ep=$ep; prev_stamp="$stamp"; MDM_SPAN=$(( ep - E_ep ))
-        MDM_N_REQ=$(( MDM_N_REQ + 1 ))
-        [[ "$label" == InstallApplication* || "$label" == InstallEnterpriseApplication* ]] && MDM_N_APP=$(( MDM_N_APP + 1 ))
-        case "$result" in Acknowledged*) MDM_N_ACK=$(( MDM_N_ACK + 1 )) ;; Error*) MDM_N_ERR=$(( MDM_N_ERR + 1 )) ;; NotNow*) MDM_N_NOTNOW=$(( MDM_N_NOTNOW + 1 )) ;; esac
-        txt="$label"; [[ -n "$detail" ]] && txt="$txt: $detail"; [[ -n "$result" ]] && txt="$txt  -> $result"
-        [[ "$label" == DeviceConfigured ]] && txt="$txt   <== releases Setup Assistant"
-      else
-        txt="(on the Mac) $label: $detail"
+      sso=0; [[ "$kind" == REQ && "$label" == InstallProfile && "$detail" == *SSO* ]] && sso=1
+      if (( released )); then   # after the release only app installs and the SSO profile still matter
+        [[ "$kind" == INSTREQ || "$kind" == INSTALLED || "$sso" == 1 ]] || continue
       fi
-      if (( shown < 120 )); then print -r -- "    ${stamp}   [device clock $ts]   $txt"; shown=$(( shown + 1 )); fi
-      if [[ "$label" == DeviceConfigured ]]; then MDM_RELEASED=1; break; fi
-    done <<< "$ev"
-    print "    Summary: ${MDM_N_REQ} server request(s) after enrollment: ${MDM_N_ACK} acknowledged, ${MDM_N_ERR} error, ${MDM_N_NOTNOW} NotNow; ${MDM_N_APP} app install request(s); longest quiet gap $(fmt_dur $MDM_GAP_MAX)$( (( MDM_GAP_MAX >= 300 )) && print " (${MDM_GAP_FROM} to ${MDM_GAP_TO})"), $(fmt_dur $MDM_SPAN) from enrollment to the last command; DeviceConfigured $( (( MDM_RELEASED )) && print 'seen' || print 'not seen in the log window')."
+      if (( ! released )) && [[ "$kind" == REQ || "$kind" == INSTREQ ]]; then   # server activity: a command, or an MDM-managed install it started
+        gap=$(( ep - prev_ep ))
+        if (( gap >= 300 && shown < 120 )); then print "    ...   no server activity for $(fmt_dur $gap)   ..."; fi
+        if (( gap > MDM_GAP_MAX )); then MDM_GAP_MAX=$gap; MDM_GAP_FROM="$prev_utc"; MDM_GAP_TO="$utc"; fi
+        prev_ep=$ep; prev_utc="$utc"; MDM_SPAN=$(( ep - E_ep ))
+      fi
+      case "$kind" in
+        REQ)
+          if (( ! released )); then
+            MDM_N_REQ=$(( MDM_N_REQ + 1 ))
+            [[ "$label" == InstallApplication* || "$label" == InstallEnterpriseApplication* ]] && MDM_N_APP=$(( MDM_N_APP + 1 ))
+            case "$result" in Acknowledged*) MDM_N_ACK=$(( MDM_N_ACK + 1 )) ;; Error*) MDM_N_ERR=$(( MDM_N_ERR + 1 )) ;; NotNow*) MDM_N_NOTNOW=$(( MDM_N_NOTNOW + 1 )) ;; esac
+          fi
+          txt="$label"; [[ -n "$detail" ]] && txt="$txt: $detail"; [[ -n "$result" ]] && txt="$txt  -> $result"
+          if (( sso )); then txt="$txt   <== SSO profile"; (( sso_ep == 0 )) && { sso_ep=$ep; sso_utc="$utc"; }; fi
+          if [[ "$label" == DeviceConfigured ]]; then txt="$txt   <== releases Setup Assistant"; released=1; MDM_RELEASED=1; dc_ep=$ep; dc_utc="$utc"; fi ;;
+        INSTREQ) txt="(on the Mac) $label ($detail)" ;;
+        INSTALLED) txt="(on the Mac) $label: $detail"; (( released )) || inst_list+="${detail}|${utc}|${ep}"$'\n' ;;
+        *) txt="(on the Mac) $label: $detail" ;;
+      esac
+      if (( shown < 120 )); then
+        print -r -- "    ${utc}   [device clock $ts]   $txt"; shown=$(( shown + 1 ))
+        if [[ "$label" == DeviceConfigured ]]; then print "    ...   from here only app installs and the SSO profile are listed   ..."; fi
+      else omitted=$(( omitted + 1 )); fi
+    done < "$win"
+    (( omitted )) && print "    (${omitted} more event(s) omitted; the raw slices have them all)"
+    print "    Summary: ${MDM_N_REQ} server request(s) after enrollment: ${MDM_N_ACK} acknowledged, ${MDM_N_ERR} error, ${MDM_N_NOTNOW} NotNow; ${MDM_N_APP} app install request(s); longest quiet gap $(fmt_dur $MDM_GAP_MAX)$( (( MDM_GAP_MAX >= 300 )) && print " (${MDM_GAP_FROM} to ${MDM_GAP_TO})"), $(fmt_dur $MDM_SPAN) from enrollment to the last server activity; DeviceConfigured $( (( MDM_RELEASED )) && print 'seen' || print 'not seen in the log window')."
+    if (( sso_ep == 0 )); then MDM_SSO_ORDER="the SSO profile's install was not seen in this window; DeviceConfigured $( (( dc_ep )) && print 'was seen' || print 'was not seen')"
+    elif (( dc_ep == 0 )); then MDM_SSO_ORDER="the SSO profile was installed at ${sso_utc}; DeviceConfigured was not seen in the log window"
+    elif (( sso_ep <= dc_ep )); then MDM_SSO_ORDER="the SSO profile was installed $(fmt_dur $(( dc_ep - sso_ep ))) before DeviceConfigured (${sso_utc} and ${dc_utc})"
+    else MDM_SSO_ORDER="the SSO profile was installed $(fmt_dur $(( sso_ep - dc_ep ))) after DeviceConfigured (${dc_utc} and ${sso_utc}), so the MDM had already released Setup Assistant"; fi
+    print "    SSO profile order: ${MDM_SSO_ORDER}."
+    MDM_REPEATS=$(print -r -- "$inst_list" | /usr/bin/awk -F'|' 'NF >= 3 { if (!($1 in last) || $3 - last[$1] >= 60) { n[$1]++; t[$1] = (t[$1] == "" ? $2 : t[$1] ", " $2) } last[$1] = $3 } END { for (k in n) if (n[k] > 1) printf "%s%s x%d (%s)", (c++ ? "; " : ""), k, n[k], t[k] }')
+    if [[ -n "$MDM_REPEATS" ]]; then
+      if (( MDM_RELEASED )); then print "    Installed more than once before Setup Assistant was released: ${MDM_REPEATS}."
+      else print "    Installed more than once in this window: ${MDM_REPEATS}."; fi
+    fi
   else
-    tail_ev=$(print -r -- "$ev" | /usr/bin/grep '|REQ|' | /usr/bin/tail -20)
     print "    (no ADE enrollment from Setup Assistant in this log window; the most recent server requests follow. Use --log-window to reach further back.)"
-    while IFS='|' read -r ts kind label detail result; do
+    /usr/bin/awk -F'|' '$4 == "REQ"' "$all" | /usr/bin/tail -20 > "$win"
+    while IFS='|' read -r ep utc ts kind label detail result; do
       [[ -z "$ts" ]] && continue
       txt="$label"; [[ -n "$detail" ]] && txt="$txt: $detail"; [[ -n "$result" ]] && txt="$txt  -> $result"
-      print -r -- "    $(stamp_utc "$ts")   [device clock $ts]   $txt"
-    done <<< "$tail_ev"
+      print -r -- "    ${utc}   [device clock $ts]   $txt"
+    done < "$win"
   fi
 }
 
@@ -2589,6 +2665,10 @@ PRED_MDMCMD='process == "mdmclient" AND (eventMessage CONTAINS[c] "Processing se
 capture "$D3/log-show-mdm-commands.txt" \
         /usr/bin/log show --info --debug --style default --last "$LOG_WINDOW" --predicate "$PRED_MDMCMD"
 
+# the installer's own log names each app that was installed and when; the MDM command lines do not name the app
+capture "$D3/install-log-events.txt" \
+        /bin/sh -c '/usr/bin/grep -E "installd\[[0-9]+\]: (Installed .|PackageKit: request=PKInstallRequest .*MDMManagedAppInstall=YES)" /var/log/install.log | /usr/bin/tail -3000'
+
 # =============================================================================
 # 04 - proof the device attempted PSSO registration
 # =============================================================================
@@ -2689,10 +2769,10 @@ case "$AWAIT" in
   0) vcheck INFO mdm-await-configuration "the enrollment profile has AwaitDeviceConfigured = 0: Setup Assistant does not wait for the MDM server" ;;
 esac
 MDM_TL="$STAGE/mdm-command-timeline.txt"
-mdm_command_timeline "$D3/log-show-mdm-commands.txt" > "$MDM_TL"
+mdm_command_timeline "$D3/log-show-mdm-commands.txt" "$D3/install-log-events.txt" > "$MDM_TL"
 if (( MDM_HAVE )) && [[ -n "$MDM_ENROLL" ]]; then
   if (( MDM_GAP_MAX >= 600 )); then
-    vcheck WARN mdm-setup-gap "after the ADE enrollment in Setup Assistant ($(stamp_utc "$MDM_ENROLL")) the MDM server sent no request for $(fmt_dur $MDM_GAP_MAX) (from ${MDM_GAP_FROM} to ${MDM_GAP_TO}), and $(fmt_dur $MDM_SPAN) passed from enrollment to its last command; ${MDM_N_REQ} request(s) in all, ${MDM_N_APP} of them app installs; DeviceConfigured $( (( MDM_RELEASED )) && print seen || print 'not seen in the log window'). A long app download or install can explain a gap like this; if none was running, the server was waiting on something and not sending"
+    vcheck WARN mdm-setup-gap "after the ADE enrollment in Setup Assistant ($(stamp_utc "$MDM_ENROLL")) the MDM server sent no request for $(fmt_dur $MDM_GAP_MAX) (from ${MDM_GAP_FROM} to ${MDM_GAP_TO}), and $(fmt_dur $MDM_SPAN) passed from enrollment to its last command; ${MDM_N_REQ} request(s) in all, ${MDM_N_APP} of them app installs$( [[ -n "$MDM_REPEATS" ]] && print "; installed more than once: ${MDM_REPEATS}"); ${MDM_SSO_ORDER}. A long app download or install can explain a gap like this; if none was running, the server was waiting on something and not sending"
   else
     vcheck PASS mdm-setup-gap "after the ADE enrollment in Setup Assistant the MDM server's longest quiet gap was $(fmt_dur $MDM_GAP_MAX) (${MDM_N_REQ} request(s))"
   fi
@@ -3017,7 +3097,7 @@ typeset -a RENAMES; RENAMES=()
 /bin/mkdir -p "$D6/network-probes"
 for f in "$D6"/net-*; do [[ -e "$f" ]] && /bin/mv "$f" "$D6/network-probes/"; done
 number_files "$D2" app-sso-platform-state.txt app-sso-listrealms.txt local-account-dscl.txt local-account-id.txt local-accounts-list.txt local-account-psso-link.txt pluginkit-sso-related.txt pluginkit-auth-service-extension.txt pluginkit-all.txt app-sso-help.txt
-number_files "$D3" profiles-status-enrollment.txt profiles-show-enrollment.txt profiles-list.txt profiles-show-configuration.txt profiles-show-all.txt profiles-show-all-xml.txt psso-payload-extract.txt log-show-mdm-profile-install.txt log-show-mdm-commands.txt configurationprofiles-dir-listing.txt
+number_files "$D3" profiles-status-enrollment.txt profiles-show-enrollment.txt profiles-list.txt profiles-show-configuration.txt profiles-show-all.txt profiles-show-all-xml.txt psso-payload-extract.txt log-show-mdm-profile-install.txt log-show-mdm-commands.txt install-log-events.txt configurationprofiles-dir-listing.txt
 number_files "$D4" log-show-registration-timeline-with-tz.txt log-show-appsso-PODiagnostics.txt psso-config-seen-by-appsso.txt username-trace.txt log-show-psso-all.txt idp-extension-files
 number_files "$D5" hubcli-logs-collect.txt hubcli-archive log-show-hub.txt log-show-hub-health-with-tz.txt hubcli-help.txt hubcli-logs-help.txt airwatch-dir-listing.txt files
 number_files "$D6" redirect-url-tests.txt swcutil-show.txt sntp-time.apple.com.txt scutil-proxy.txt pluginkit-idp-extension-detail.txt app-sso-platform-messages.txt klist.txt sso-crash-reports.txt network-agents.txt systemextensions-list.txt nc-list.txt appsso-log-config.txt safari-navigation-1.txt safari-navigation-2.txt safari-navigation-3.txt handoff-url-1.txt handoff-url-2.txt handoff-url-3.txt handoff-url-4.txt handoff-url-5.txt handoff-url-6.txt handoff-url-7.txt handoff-url-8.txt handoff-url-9.txt handoff-url-10.txt kerberos-url-1.txt kerberos-url-2.txt kerberos-url-3.txt network-probes
