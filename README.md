@@ -1,6 +1,6 @@
 # pssodiag: a Platform SSO diagnostic tool for macOS
 
-`pssodiagv311.zsh` is a single-file zsh script that answers one question on a Mac:
+`pssodiagv312.zsh` is a single-file zsh script that answers one question on a Mac:
 
 > **Did Apple Platform SSO (PSSO) registration succeed, and is it working the way it was designed to?**
 
@@ -10,7 +10,7 @@ It was built for troubleshooting PSSO with **Microsoft Entra ID (the Intune Comp
 
 A companion troubleshooting guide, built around this script, is on the [After Six Computers blog](https://aftersixcomputers.com/how-to-troubleshoot-apple-platform-sso/).
 
-The current version is **3.1.1**. The version is in the script's file name and on the second line of the script.
+The current version is **3.1.2**. The version is in the script's file name and on the second line of the script.
 
 ---
 
@@ -21,6 +21,7 @@ The current version is **3.1.1**. The version is in the script's file name and o
 - [Quick start](#quick-start)
 - [Recommended workflow for a failing Mac](#recommended-workflow-for-a-failing-mac)
 - [The Redirect URL network tests](#the-redirect-url-network-tests)
+- [Reading times in the logs](#reading-times-in-the-logs)
 - [Options](#options)
 - [What happens when you run it](#what-happens-when-you-run-it)
 - [The output bundle](#the-output-bundle)
@@ -41,7 +42,7 @@ The current version is **3.1.1**. The version is in the script's file name and o
 1. **Collects evidence**
    - PSSO state from `app-sso platform -s`, the extension registration from `pluginkit`, and the local accounts.
    - The configuration profiles MDM delivered, including the Extensible SSO and Associated Domains payloads, and their install, update and removal events.
-   - An **MDM command and app install timeline**: every request the MDM server sent this Mac, how the Mac answered, which profile each install was, and the apps the installer actually installed, by name (from `/var/log/install.log`), all in one time order. After an ADE enrollment made in Setup Assistant it lists them in order, calls out long quiet gaps, marks the SSO profile, says whether the SSO profile arrived before or after `DeviceConfigured`, and names any app installed more than once before Setup Assistant was released. That shows where a "stuck in Setup Assistant" enrollment waited and what it was doing.
+   - An **MDM command and app install timeline**: every request the MDM server sent this Mac, how the Mac answered, which profile each install was, and the apps the installer actually installed, by name (from `/var/log/install.log`), all in one time order. Each MDM-managed install is paired with the server app-install command that came just before it and shows the installer package it ran; app-install commands after the release are listed too. After an ADE enrollment made in Setup Assistant it lists them in order, calls out long quiet gaps, marks the SSO profile, says whether the SSO profile arrived before or after `DeviceConfigured`, names any app installed more than once before Setup Assistant was released, and flags an installer package that ran more than once. That shows where a "stuck in Setup Assistant" enrollment waited and what it was doing.
    - Unified-log slices for PSSO registration attempts, with every timestamp converted to UTC. macOS prints each log line in the time zone in effect when it was written, which misleads on a Mac that changes zone during Setup Assistant.
    - The identity provider extension's own log files (the Company Portal SSO extension, Okta Verify) when present, and Intelligent Hub's `hubcli` archive and unified log when Hub is installed.
    - A `sysdiagnose` archive, plus a record of exactly how it was captured, so it can be handed to Apple Support.
@@ -69,7 +70,7 @@ The checks are automated greps and probes. They are a starting point, **not a ve
 
 ### Granting Full Disk Access
 
-1. Open **System Settings > Privacy & Security > Full Disk Access**. (`sudo ./pssodiagv311.zsh --open-fda-settings` opens the pane for you.)
+1. Open **System Settings > Privacy & Security > Full Disk Access**. (`sudo ./pssodiagv312.zsh --open-fda-settings` opens the pane for you.)
 2. Turn on the terminal app you use (Terminal, iTerm and so on), adding it with **+** if needed.
 3. Quit the terminal app completely (Command-Q) and reopen it. macOS applies the permission only to terminals started afterwards.
 
@@ -79,16 +80,16 @@ The checks are automated greps and probes. They are a starting point, **not a ve
 
 ```bash
 # 1. Make the script executable
-chmod +x ./pssodiagv311.zsh
+chmod +x ./pssodiagv312.zsh
 
 # 2. Optional: syntax check
-zsh -n ./pssodiagv311.zsh && echo OK
+zsh -n ./pssodiagv312.zsh && echo OK
 
 # 3. Optional: show the plan without collecting anything
-sudo ./pssodiagv311.zsh --dry-run
+sudo ./pssodiagv312.zsh --dry-run
 
 # 4. Run it (it asks "Proceed? [y/N]" unless you pass --yes)
-sudo ./pssodiagv311.zsh
+sudo ./pssodiagv312.zsh
 ```
 
 When it finishes it prints the path of the zip, which is written to **the folder the script is in** unless you pass `--output-dir`. The `RESULT:` line, any informational notes and any collection problems are printed underneath.
@@ -97,27 +98,27 @@ When it finishes it prints the path of the zip, which is written to **the folder
 
 ```bash
 # Fast run right after a failed registration attempt
-sudo ./pssodiagv311.zsh --tests-only
+sudo ./pssodiagv312.zsh --tests-only
 
 # Run ONLY the Redirect URL network tests (no collection, no zip), for example after a firewall change
-sudo ./pssodiagv311.zsh --test-url
+sudo ./pssodiagv312.zsh --test-url
 
 # ...and also test some URLs of your own
-sudo ./pssodiagv311.zsh --test-url https://login.microsoftonline.com/ https://example-tenant.example.com/
+sudo ./pssodiagv312.zsh --test-url https://login.microsoftonline.com/ https://example-tenant.example.com/
 
 # Also check, with a Safari test, whether specific sites are handed to the SSO extension
-sudo ./pssodiagv311.zsh --tests-only \
+sudo ./pssodiagv312.zsh --tests-only \
   --handoff-url https://login.microsoftonline.com/ \
   --handoff-url https://example-tenant.example.com/
 
 # Kerberos web test against an internal site (runs curl as the logged-in user)
-sudo ./pssodiagv311.zsh --kerberos-url https://intranet.example.com/
+sudo ./pssodiagv312.zsh --kerberos-url https://intranet.example.com/
 
 # Write the zip somewhere else
-sudo ./pssodiagv311.zsh --output-dir /Users/Shared/diag
+sudo ./pssodiagv312.zsh --output-dir /Users/Shared/diag
 
 # Unattended, with a longer log window
-sudo ./pssodiagv311.zsh --yes --log-window 3d
+sudo ./pssodiagv312.zsh --yes --log-window 3d
 ```
 
 ---
@@ -127,14 +128,14 @@ sudo ./pssodiagv311.zsh --yes --log-window 3d
 macOS keeps debug messages for the Platform SSO log subsystem only briefly unless it is asked to persist them. If you can reproduce the problem:
 
 1. **Turn on persistent debug logging.**
-   `sudo ./pssodiagv311.zsh --debug-logging on`
+   `sudo ./pssodiagv312.zsh --debug-logging on`
    It prints the exact `log config` command, asks first, changes the setting for the `com.apple.AppSSO` subsystem only, and exits without collecting anything. (For the Microsoft extension, Microsoft also suggests Company Portal > Settings > *Turn on advanced logging*.)
 2. **Reproduce the problem.**
 3. **Run the script right afterwards.**
-   `sudo ./pssodiagv311.zsh --tests-only`
+   `sudo ./pssodiagv312.zsh --tests-only`
    This skips `sysdiagnose` and the `hubcli` archive and uses a three hour log window, so the evidence reflects the attempt you just made.
 4. **Turn logging back to the default.**
-   `sudo ./pssodiagv311.zsh --debug-logging off`
+   `sudo ./pssodiagv312.zsh --debug-logging off`
 
 The script also reports, in every run, whether AppSSO debug logging is currently persisted (`appsso-debug-logging`), and the DIAGNOSIS section suggests the steps above when a failure would have benefited from it.
 
@@ -170,9 +171,24 @@ After those, the script tests every **additional** Redirect URL the payload list
 - A required URL that fails, or a required URL missing from the payload, is a **FAIL**. A failing optional or additional URL is a **WARN**. An additional entry that does not resolve and does not look like a typo is **INFO**, because an entry can be a URL prefix that macOS matches and nothing is served there.
 - The tests use the macOS system HTTPS proxy when one is set. With a proxy auto-config (PAC) file they connect directly, and the output says so, because a failure can then mean the Mac needs the PAC's proxy.
 
-**Running them on their own.** `sudo ./pssodiagv311.zsh --test-url` runs only these tests and exits: no collection, no zip, no prompt, and no Full Disk Access needed (it does need `sudo`, to read the installed profiles). Put URLs after it to test those too (at most 10). The exit status is `0` when everything is fine and `1` when a required URL is unreachable or missing, or a URL you listed fails. Use it to re-test after a firewall or profile change.
+**Running them on their own.** `sudo ./pssodiagv312.zsh --test-url` runs only these tests and exits: no collection, no zip, no prompt, and no Full Disk Access needed (it does need `sudo`, to read the installed profiles). Put URLs after it to test those too (at most 10). The exit status is `0` when everything is fine and `1` when a required URL is unreachable or missing, or a URL you listed fails. Use it to re-test after a firewall or profile change.
 
 **In a full run** they come first. If a required URL fails, the script asks `Continue with the full collection? [Y/n]` so you can stop and fix the network first; `--yes` continues without asking. The results are in the bundle as the `redirect-url:*` and `redirect-url-payload:*` checks, the full transcript is `06-validation/redirect-url-tests.txt`, and the DIAGNOSIS explains any failure.
+
+---
+
+## Reading times in the logs
+
+Every time the script writes itself is **UTC**: `collector.log`, the header of each evidence file, the findings, the `Collected` line in `README.txt`, and the Company Portal receipt time. The raw log slices are different, and that matters when a Mac changes time zone part-way through. In the bundles collected so far the Mac started Setup Assistant in Pacific time (UTC-8) and switched to the right zone when user registration began, so the Mac's clock jumps by whole hours inside one file.
+
+| File | How the time is written |
+|---|---|
+| `log show` slices in default style (the MDM slices, the registration timeline with time zone) | The Mac's clock plus a per-line UTC offset, for example `-0800` and later `-0700`. Unambiguous. |
+| `log show` slices in compact style (the AppSSO slice) | The Mac's clock only, **with no offset**. Ambiguous across a zone change. |
+| `install.log` events | The Mac's clock plus an hours-only offset, for example `-08`. |
+| `app-sso` state, `swcutil`, `profiles show` install dates | UTC. |
+
+The `Times:` lines at the top of the findings give the zone now, whether the Mac sets its zone automatically, and the measured instant of any offset change (the `timezone-change` check records the same). To read a compact-style line, treat it as UTC minus the earlier offset before that instant and UTC minus the later offset after it. The timelines in the findings already convert every line to UTC.
 
 ---
 
@@ -320,6 +336,7 @@ Every check has a stable name (shown in `code` below), and the raw evidence is i
 - `mdm-await-configuration`: whether the enrollment profile has `AwaitDeviceConfigured` on, which makes Setup Assistant wait for the MDM server to send `DeviceConfigured` ([Apple](https://developer.apple.com/documentation/devicemanagement/token-update) documents no timeout for that wait).
 - `mdm-setup-gap`: after an ADE enrollment made in Setup Assistant (inside the log window), the longest stretch with no server activity (a command, or an MDM-managed install it started) and the total time from enrollment to the last server activity. WARN at 10 minutes or more; the message also names any app installed more than once before the release and says whether the SSO profile came before or after `DeviceConfigured`. A long app download can explain a gap; otherwise the server was waiting on something and not sending.
 - `mdm-notnow`: how many commands the Mac answered `NotNow` (told the server to retry later) while in Setup Assistant.
+- `timezone-change` (INFO, recorded only when it happens): the device clock offset changed during the log window, with the UTC instant and the clock times either side. See [Reading times in the logs](#reading-times-in-the-logs).
 
 **Associated domains**
 - `domain-association:*`: for each host, what `swcutil` decided for the extension. A missing payload entry is only a problem when macOS has no approval either, because some apps (for example Company Portal) carry their domains inside the app.
@@ -503,8 +520,8 @@ The AASA, identity provider and sign-in probes use `curl` and do not use the sys
 
 The script's version is in two places that change together on every release:
 
-- the **file name**: `pssodiagv` followed by the version without dots, for example version `3.1.0` is `pssodiagv311.zsh`
-- the **header comment** on line 2, for example `# pssodiagv311.zsh v3.1.1`
+- the **file name**: `pssodiagv` followed by the version without dots, for example version `3.1.0` is `pssodiagv312.zsh`
+- the **header comment** on line 2, for example `# pssodiagv312.zsh v3.1.2`
 
 The bundle's `README.txt` and `collector.log` also record the script version that produced them, which makes it easy to confirm which file someone actually ran.
 
@@ -519,6 +536,7 @@ The bundle's `README.txt` and `collector.log` also record the script version tha
 | 3.0 | Plain-language `RESULT:` line and DIAGNOSIS section (result also in the zip name); AppSSO debug-logging status and `--debug-logging`; Okta checks and Okta Verify logs; payload settings listing and Setup Assistant key report; leftover-state checks; Kerberos checks and `--kerberos-url` |
 | 3.1 | The Redirect URL network tests: Microsoft, Okta and Omnissa Hub default URL lists plus the URLs in the payload, run first and shown live, and on their own with `--test-url` (the Safari test became `--handoff-url`); an exempt `root` account passes; `okta-org-url` accepts a custom domain; the MDM command timeline and the `mdm-*` checks |
 | 3.1.1 | The timeline now includes the apps the installer actually installed, by name, merged with the MDM commands and profile installs in one time order; marks the SSO profile; says whether the SSO profile arrived before or after `DeviceConfigured`; flags apps installed more than once before Setup Assistant was released; an MDM-managed install start counts as server activity for the quiet-gap check |
+| 3.1.2 | The timeline pairs each MDM-managed install with the server app-install command before it and shows the installer package; app-install commands after `DeviceConfigured` are listed; the same installer package running twice is flagged. Every time the script writes itself is UTC, the findings state the Mac's time zone and any device clock offset change (`Times:` lines and the `timezone-change` check) |
 
 ---
 
