@@ -1,5 +1,5 @@
 #!/bin/zsh
-# pssodiagv313.zsh v3.1.3
+# pssodiagv320.zsh v3.2.0
 # Options:
 #   -y, --yes               skip the confirmation prompt
 #   -n, --dry-run           print the plan and exit; collect nothing
@@ -9,6 +9,8 @@
 #       --tests-only        fast mode: no sysdiagnose, no hubcli archive, 3h log window (run it right after a failed attempt)
 #       --no-browser-test   skip the background Safari navigation test
 #       --output-dir <path> folder for the finished .zip (default: the folder this script is in)
+#       --single-zip        put everything in ONE .zip (the default writes a small .zip plus a separate -heavy.zip for the sysdiagnose and Hub archive)
+#       --light-only        write only the small .zip; the sysdiagnose and Hub archive are not kept
 #       --test-url [url ...] run ONLY the Redirect URL network tests (vendor default URLs + the URLs in the payload + any URLs you list), then exit
 #       --handoff-url <url> also test whether this URL is handed to the SSO extension, with a Safari test (repeatable, max 10)
 #       --kerberos-url <url> Kerberos web test: curl --negotiate as the logged-in user, then check klist (repeatable, max 3)
@@ -16,7 +18,7 @@
 #       --open-fda-settings open System Settings > Full Disk Access, print the steps, exit
 #   -h, --help
 
-SCRIPT_VERSION="3.1.3"
+SCRIPT_VERSION="3.2.0"
 SCRIPT_PATH=${0:A}
 SCRIPT_DIR=${SCRIPT_PATH:h}
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -26,6 +28,8 @@ HUB_DURATION="1d"
 ASSUME_YES=0
 DRY_RUN=0
 SKIP_SYSDIAG=0
+SINGLE_ZIP=0
+LIGHT_ONLY=0
 OPEN_FDA=0
 NO_BROWSER=0
 OUT_DIR_ARG=""
@@ -50,6 +54,8 @@ while (( $# )); do
     --log-window)        LOG_WINDOW="${2:-}"; LOG_WINDOW_SET=1; shift ;;
     --hub-duration)      HUB_DURATION="${2:-}"; shift ;;
     --skip-sysdiagnose)  SKIP_SYSDIAG=1 ;;
+    --single-zip)        SINGLE_ZIP=1 ;;
+    --light-only)        LIGHT_ONLY=1 ;;
     --tests-only)        TESTS_ONLY=1; SKIP_SYSDIAG=1 ;;
     --no-browser-test)   NO_BROWSER=1 ;;
     --output-dir)        [[ -n "${2:-}" ]] || { print -u2 "--output-dir needs a folder path"; exit 2; }; OUT_DIR_ARG="$2"; shift ;;
@@ -86,6 +92,10 @@ if (( ${#EXTRA_URLS[@]} > 10 )); then print -u2 "--test-url: at most 10 URLs"; e
 for u in "${EXTRA_URLS[@]}"; do
   [[ "$u" =~ ^https?://[^[:space:]]+$ ]] || { print -u2 "--test-url needs http:// or https:// URLs without spaces: $u"; exit 2; }
 done
+if (( SINGLE_ZIP && LIGHT_ONLY )); then print -u2 "--single-zip and --light-only cannot be used together"; exit 2; fi
+if (( SINGLE_ZIP )); then PKG_PLAN="package everything into one .zip"; PKG_NOTE="one zip with everything."
+elif (( LIGHT_ONLY )); then PKG_PLAN="package a small .zip only (the sysdiagnose and Hub archive are not kept)"; PKG_NOTE="this is the small zip; the sysdiagnose and Hub archive were not kept (--light-only)."
+else PKG_PLAN="package a small .zip plus a separate -heavy.zip for the sysdiagnose and Hub archive"; PKG_NOTE="this is the small zip; the sysdiagnose and Hub archive, when the run made them, are in a separate -heavy zip with the same name (send it only if asked)."; fi
 KERB_PLAN=""
 if (( ${#KERBEROS_URLS[@]} > 3 )); then print -u2 "--kerberos-url: at most 3 URLs"; exit 2; fi
 for u in "${KERBEROS_URLS[@]}"; do
@@ -99,6 +109,7 @@ OUT_DIR="$SCRIPT_DIR"; OUT_DIR_SRC="default: the folder this script is in"; OUT_
 if [[ -n "$OUT_DIR_ARG" ]]; then OUT_DIR="${OUT_DIR_ARG:A}"; OUT_DIR_SRC="--output-dir"; fi
 
 [[ "$LOG_WINDOW"    =~ '^[0-9]+[smhd]$' ]] || { print -u2 "Bad --log-window: '$LOG_WINDOW' (use e.g. 90m, 6h, 1d)"; exit 2; }
+MDM_LOG_WINDOW="$LOG_WINDOW"   # widened later, for the MDM and registration timeline slices only, when the ADE enrollment is older than the window
 [[ "$HUB_DURATION"  =~ '^[0-9]+[smhd]$' ]] || { print -u2 "Bad --hub-duration: '$HUB_DURATION' (use e.g. 1h, 1d)"; exit 2; }
 [[ "$(uname)" == "Darwin" ]] || { print -u2 "This script only runs on macOS."; exit 2; }
 
@@ -246,7 +257,7 @@ Plan (read-only, except sysdiagnose / hubcli archive):
      background Safari navigation test for each SSO payload URL and each --handoff-url URL
      (skip the browser part: --no-browser-test)
      plus Okta, Kerberos, leftover-state and AppSSO debug-logging checks where they apply
-  8. package everything into one .zip
+  8. $PKG_PLAN
 "
 [[ -n "$MODE_PLAN" ]] && print -r -- "$MODE_PLAN"
 [[ -n "$HANDOFF_URL_PLAN" ]] && print -r -- "$HANDOFF_URL_PLAN"
@@ -744,7 +755,7 @@ AWKEOF
     while IFS='|' read -r ep utc ts kind label detail result sig; do
       [[ "$kind" == LOCAL && "$ts" == "$MDM_ENROLL" ]] && continue
       [[ "$detail" == *"source ManagedSettings"* ]] && continue
-      sso=0; [[ "$kind" == REQ && "$label" == InstallProfile && "$detail" == *SSO* ]] && sso=1
+      sso=0; [[ "$kind" == REQ && "$label" == InstallProfile ]] && is_sso_profile_name "$detail" && sso=1
       appcmd=0; [[ "$kind" == REQ && ( "$label" == InstallApplication* || "$label" == InstallEnterpriseApplication* ) ]] && appcmd=1
       isq=0   # an inventory poll (the server asking the Mac for a list or status) is not delivery; UEM sends one every few minutes
       if [[ "$kind" == REQ ]]; then case "$label" in *List|*Info|*Information|*Status|Restrictions|AvailableOSUpdates) isq=1 ;; esac; fi
@@ -813,6 +824,139 @@ AWKEOF
       print -r -- "    ${utc}   [device clock $ts]   $txt"
     done < "$win"
   fi
+}
+
+detect_enrollment_date() {   # the ADE/MDM enrollment time = the install date of the profile that holds the MDM payload (needs FLAT)
+  local q pp
+  ENROLL_INSTALL_DATE=""
+  [[ -s "$FLAT" ]] || return 0
+  q=$(/usr/bin/sed -nE 's/^(.*)\.PayloadType=com\.apple\.mdm$/\1/p' "$FLAT" | /usr/bin/head -1)
+  [[ -n "$q" ]] || return 0
+  pp="${q%%.ProfileItems*}"
+  ENROLL_INSTALL_DATE=$(flat_val "$pp" ProfileInstallDate)
+}
+
+size_log_window() {   # widen the MDM and registration timeline slices so they reach the ADE enrollment (capped at 14 days); not when --log-window was given
+  local d ep now age need num unit cur days old="$MDM_LOG_WINDOW" capped=0
+  (( LOG_WINDOW_SET || TESTS_ONLY )) && return 0
+  [[ -n "$ENROLL_INSTALL_DATE" ]] || return 0
+  d="${ENROLL_INSTALL_DATE% *}${ENROLL_INSTALL_DATE##* }"
+  ep=$(to_epoch_tz "$d"); [[ -n "$ep" ]] || return 0
+  now=$(/bin/date +%s); age=$(( now - ep )); (( age > 0 )) || return 0
+  need=$(( age + 7200 ))
+  num="${MDM_LOG_WINDOW%[smhd]}"; unit="${MDM_LOG_WINDOW##*[0-9]}"
+  case "$unit" in s) cur=$num ;; m) cur=$(( num * 60 )) ;; h) cur=$(( num * 3600 )) ;; d) cur=$(( num * 86400 )) ;; *) return 0 ;; esac
+  (( need > cur )) || return 0
+  days=$(( (need + 86399) / 86400 ))
+  if (( days > 14 )); then days=14; capped=1; fi
+  MDM_LOG_WINDOW="${days}d"
+  note "The MDM and registration timeline slices use a ${MDM_LOG_WINDOW} log window instead of ${old}, to reach the ADE enrollment ($(stamp_utc "$d"))$( (( capped )) && print '; the enrollment is older than the 14-day cap, so the timeline may not include it')"
+}
+
+is_sso_profile_name() {   # <profile name as logged, with its /V_n suffix> -> success for a profile that carries an Extensible SSO payload; the installed profiles decide, and only when they cannot be read does a name containing SSO count
+  local n="${1%%/V_[0-9]*}"
+  if [[ -n "$SSO_PROFILE_BASES" ]]; then print -r -- "$SSO_PROFILE_BASES" | /usr/bin/grep -qxF -- "$n"
+  else [[ "$1" == *SSO* ]]; fi
+}
+
+split_heavy_files() {   # move the large archives (sysdiagnose, Hub archive) out of the bundle so the main zip stays small enough to send
+  local src rel dir base sz sha
+  HEAVY_ROOT="$STAGE/heavy"; HEAVY_WORK="$HEAVY_ROOT/$BUNDLE"; HEAVY_LIST=""
+  while IFS= read -r src; do
+    [[ -z "$src" || ! -f "$src" ]] && continue
+    rel="${src#"$WORK"/}"; dir=$(/usr/bin/dirname "$rel"); base=$(/usr/bin/basename "$src")
+    /bin/mkdir -p "$HEAVY_WORK/$dir" || continue
+    /bin/mv "$src" "$HEAVY_WORK/$rel" || continue
+    sz=$(/usr/bin/stat -f '%z' "$HEAVY_WORK/$rel" 2>/dev/null); sha=$(/usr/bin/shasum -a 256 "$HEAVY_WORK/$rel" 2>/dev/null | /usr/bin/awk '{ print $1 }')
+    HEAVY_LIST+="${rel}|${sz}|${sha}"$'\n'
+    print -r -- "${base}  ${sz} bytes  SHA-256 ${sha}  ($( (( LIGHT_ONLY )) && print 'not kept: --light-only' || print "moved to ${BUNDLE}-${RESULT_CODE}-heavy.zip, same folder path"))" >> "$WORK/$dir/MOVED-TO-HEAVY-ZIP.txt"
+  done <<< "$( { /usr/bin/find "$D1" -maxdepth 1 -type f -name 'sysdiagnose_*' 2>/dev/null; /usr/bin/find "$D5/hubcli-archive" -type f 2>/dev/null; } )"
+  [[ -n "$HEAVY_LIST" ]] && print -r -- "$HEAVY_LIST" | /usr/bin/awk -F'|' 'NF >= 3 { print $2 "  " $1 "  SHA-256 " $3 }' > "$HEAVY_WORK/MANIFEST-heavy.txt"
+  return 0
+}
+
+check_touch_id() {   # does the profile require Touch ID for the Secure Enclave key? (Microsoft: enable_se_key_biometric_policy in ExtensionData)
+  local p ext method flag skipbio=0 skipfile="$D3/profiles-show-enrollment.txt"
+  [[ -s "$FLAT" ]] || return 0
+  [[ -s "$skipfile" ]] && /usr/bin/sed -n '/SkipSetup/,/);/p' "$skipfile" | /usr/bin/grep -qE '(^|[^A-Za-z])Biometric([^A-Za-z]|$)' && skipbio=1
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    ext=$(flat_val "$p" ExtensionIdentifier); [[ "$ext" == *microsoft* ]] || continue
+    method=$(flat_val "$p" PlatformSSO.AuthenticationMethod); [[ -z "$method" ]] && method=$(flat_val "$p" AuthenticationMethod)
+    if [[ "$method" != UserSecureEnclaveKey ]]; then
+      vcheck INFO touch-id-requirement "the authentication method is ${method:-not set}, not UserSecureEnclaveKey, so Microsoft's Touch ID policy does not apply"
+      continue
+    fi
+    flag=$(flat_val "$p" ExtensionData.enable_se_key_biometric_policy)
+    case "$flag" in
+      true|True|TRUE|1)
+        if (( skipbio )); then
+          vcheck WARN touch-id-requirement "enable_se_key_biometric_policy is on, so users must set up Touch ID to register, but the ADE profile skips the Touch ID setup pane (Biometric), so Setup Assistant cannot offer it; remove Biometric from the skipped panes"
+        else
+          vcheck INFO touch-id-requirement "Touch ID is REQUIRED for the Secure Enclave key (enable_se_key_biometric_policy = true). Users must set up Touch ID to register and there is no password fallback, so a Mac without Touch ID cannot authenticate to Entra. Microsoft: macOS 14.6 or later and Company Portal 2504 or later; turning it on after registration needs an admin-driven re-registration"
+        fi ;;
+      *)
+        vcheck INFO touch-id-requirement "Touch ID is NOT required: ExtensionData has no enable_se_key_biometric_policy = true, so the Secure Enclave key still works with the local password. Setup Assistant's Touch ID pane is $( (( skipbio )) && print "hidden by the ADE profile" || print "shown (it is Apple's own setup step and a user can skip it)"). To require Touch ID add enable_se_key_biometric_policy as a Boolean true to ExtensionData (Microsoft; macOS 14.6 or later, Company Portal 2504 or later; changing it after registration needs an admin-driven re-registration)" ;;
+    esac
+  done <<< "$(sso_prefixes)"
+}
+
+check_payload_lint() {   # a documentation-backed review of the installed SSO payload; information unless two settings contradict each other
+  local p ext ms method top k ci lf an cu cfu uam nam accts
+  local KNOWN="Enable_SSO_On_All_ManagedApps
+AppAllowList
+AppBlockList
+AppPrefixAllowList
+AppCookieSSOAllowList
+browser_sso_interaction_enabled
+disable_explicit_app_prompt
+disable_explicit_app_prompt_and_autologin
+disable_explicit_native_app_prompt
+disable_explicit_native_app_prompt_and_autologin
+disable_inapp_sso_signin
+admin_debug_mode_enabled
+device_registration
+use_most_secure_storage
+enable_se_key_biometric_policy"
+  [[ -s "$FLAT" ]] || return 0
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    ext=$(flat_val "$p" ExtensionIdentifier); ms=0; [[ "$ext" == *microsoft* ]] && ms=1
+    method=$(flat_val "$p" PlatformSSO.AuthenticationMethod); top=$(flat_val "$p" AuthenticationMethod)
+    if (( ms )); then
+      while IFS= read -r k; do
+        [[ -z "$k" ]] && continue
+        print -r -- "$KNOWN" | /usr/bin/grep -qxF -- "$k" && continue
+        ci=$(print -r -- "$KNOWN" | /usr/bin/grep -ixF -- "$k" | /usr/bin/head -1)
+        if [[ -n "$ci" ]]; then vcheck INFO payload-lint:extension-data-key "ExtensionData key '${k}' differs only in letter case from '${ci}', the spelling Microsoft documents; key names are case-sensitive"
+        elif [[ "$k" == com.apple.PlatformSSO.* ]]; then vcheck INFO payload-lint:extension-data-key "ExtensionData has the key '${k}'. I found no Apple or Microsoft page that documents any com.apple.PlatformSSO.* name as an ExtensionData key; Apple documents com.apple.PlatformSSO.AccountShortName as a VALUE for TokenToUserMapping > AccountName (macOS 15.4 and later)"
+        elif [[ "$k" == browser_sso_disable_mfa ]]; then vcheck INFO payload-lint:extension-data-key "ExtensionData has browser_sso_disable_mfa. It appears only in older Microsoft documentation (off by default, recommended to stay off) and not on Microsoft's current plug-in page"
+        else vcheck INFO payload-lint:extension-data-key "ExtensionData key '${k}' is not in the key list on Microsoft's plug-in page (the Platform SSO, Kerberos and sign-in scenarios document more keys on other Microsoft pages); check its spelling"
+        fi
+      done <<< "$(flat_get "$p" | /usr/bin/awk -F= '/^ExtensionData\./ { k = $1; sub(/^ExtensionData\./, "", k); sub(/\[.*/, "", k); print k }' | /usr/bin/sort -u)"
+    fi
+    if [[ -n "$top" && -n "$method" ]]; then
+      if [[ "$top" == "$method" ]]; then vcheck INFO payload-lint:authentication-method "AuthenticationMethod is set twice, at the top level and inside PlatformSSO, both ${method}. The top-level one is the macOS 13-only setting (Microsoft's Intune pages label it deprecated); Platform SSO during ADE needs macOS 26, so it is redundant unless macOS 13 Macs also get this profile"
+      else vcheck WARN payload-lint:authentication-method "AuthenticationMethod is ${top} at the top level and ${method} inside PlatformSSO; macOS 13 Macs use the first and newer Macs the second"; fi
+    fi
+    lf=$(flat_val "$p" PlatformSSO.LoginFrequency)
+    [[ "$lf" == 64800 ]] && vcheck INFO payload-lint:login-frequency "LoginFrequency is 64800, which is Apple's default (18 hours), so the setting changes nothing"
+    [[ -n "$(flat_val "$p" PlatformSSO.AllowWebLoginPasswordSync)" && "$method" != OpenID ]] && vcheck INFO payload-lint:password-sync "AllowWebLoginPasswordSync is set but the authentication method is ${method:-not set}; Apple's page lists that key with the OpenID method"
+    if (( ms )); then
+      [[ "$(flat_val "$p" PlatformSSO.EnableAuthorization)" == true ]] && vcheck INFO payload-lint:enable-authorization "EnableAuthorization is on. It lets IdP accounts answer macOS authorization prompts (Apple calls it network authorization) and gives websites and apps no SSO; Microsoft's Intune pages do not document it for Entra"
+      cfu=$(flat_val "$p" PlatformSSO.EnableCreateFirstUserDuringSetup)
+      [[ "$cfu" == true && "$method" == UserSecureEnclaveKey ]] && vcheck INFO payload-lint:create-first-user "EnableCreateFirstUserDuringSetup is on with Secure Enclave; Microsoft's ADE page says to configure that setting only for the Password method"
+    fi
+    an=$(flat_val "$p" PlatformSSO.TokenToUserMapping.AccountName); cu=$(flat_val "$p" PlatformSSO.EnableCreateUserAtLogin); cfu=$(flat_val "$p" PlatformSSO.EnableCreateFirstUserDuringSetup)
+    if [[ "$an" == preferred_username && ( "$cu" == true || "$cfu" == true ) ]]; then
+      vcheck INFO payload-lint:account-name "TokenToUserMapping > AccountName is preferred_username, so a local account that Platform SSO creates gets the full UPN as its short name; com.apple.PlatformSSO.AccountShortName gives the UPN prefix instead (macOS 15.4 and later; Microsoft recommends it for ADE)"
+    fi
+    uam=$(flat_val "$p" PlatformSSO.UserAuthorizationMode); nam=$(flat_val "$p" PlatformSSO.NewUserAuthorizationMode)
+    if [[ ( "$uam" == Standard || "$nam" == Standard ) && -s "$D2/local-accounts-list.txt" ]]; then
+      accts=$(/usr/bin/grep -v '^#' "$D2/local-accounts-list.txt" | /usr/bin/awk '$2 ~ /^[0-9]+$/ && $2 + 0 >= 500 { c++ } END { print c + 0 }')
+      (( accts <= 1 )) && vcheck INFO payload-lint:authorization-mode "Standard authorization mode is set and this Mac has ${accts} local account(s) (UID 500 and up). Microsoft says at least one Admin user is required before Standard mode can be used; check that a separate local admin exists"
+    fi
+  done <<< "$(sso_prefixes)"
 }
 
 # ---- automated PSSO validation helpers ----
@@ -1815,11 +1959,6 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
        "Assertions and tokens carry timestamps, and a large offset can make the identity provider reject them." \
        "Turn on automatic date and time (System Settings > General > Date & Time) and run the script again."
   fi
-  if vhas 'WARN\|hub-allow-list'; then
-    dx "Microsoft's extension turned the Hub app away." \
-       "Hub's own sign-in requests to Microsoft are matched by Microsoft's extension and rejected unless Hub is allowed." \
-       "See the hub-allow-list line for the settings involved. The effect on users was not measured."
-  fi
   if vhas 'WARN\|(registration-without-profile|local-account-psso-link)'; then
     dx "There is leftover or mismatched Platform SSO state." \
        "A registration or an account link exists without a matching profile or registration, which usually follows a profile removal." \
@@ -1880,6 +2019,7 @@ RURL_MS_REQUIRED=(https://login.microsoftonline.com https://login.microsoft.com 
 RURL_MS_OPTIONAL=(https://login.partner.microsoftonline.cn https://login.chinacloudapi.cn https://login.microsoftonline.us https://login-us.microsoftonline.com)
 RURL_OKTA_PATHS=(/device-access/api/v1/nonce /oauth2/v1/token /v1/auth/device-sign)
 RURL_HUB_PATH=/mpsso
+ENROLL_INSTALL_DATE=""
 RURL_APPLE_HOSTS=(https://app-site-association.cdn-apple.com https://app-site-association.networking.apple)
 RURL_PROXY_ARGS=(); RURL_PROXY_NOTE=""
 RURL_TABLE=""; RURL_Q=""; RURL_EV=""
@@ -2188,7 +2328,8 @@ run_redirect_url_tests() {   # needs STAGE; EXTRA_URLS optional. Returns 1 when 
   xml="$STAGE/early-profiles.xml"
   "$PROFILESBIN" show -all -output stdout-xml > "$xml" 2>/dev/null
   FLAT="$STAGE/ssoflat-early.txt"
-  plist_flat "$xml" '(\.PayloadType$|\.ExtensionIdentifier$|\.TeamIdentifier$|\.Type$|\.Realm$|\.Hosts\[|\.URLs\[|\.PlatformSSO\.|\.ExtensionData\.|OktaVerify\.)' > "$FLAT"
+  plist_flat "$xml" '(\.PayloadType$|\.ExtensionIdentifier$|\.TeamIdentifier$|\.Type$|\.Realm$|\.Hosts\[|\.URLs\[|\.PlatformSSO\.|\.ExtensionData\.|OktaVerify\.|\.AuthenticationMethod$|\.ProfileDisplayName$|\.ProfileInstallDate$)' > "$FLAT"
+  detect_enrollment_date
   rurl_load_payloads
   vendors=$(/usr/bin/awk -F'|' '{ print $1 }' "$RURL_TABLE" | /usr/bin/sort -u)
   if [[ -z "$vendors" ]]; then
@@ -2522,7 +2663,7 @@ check_payload_vs_device() {   # needs XMLP S_STATE EXT_ID TEAM_ID CONSOLE_USER D
       if (( blocked )); then adv="Hub's bundle ID is on AppBlockList in the payload installed on this Mac - remove it from the block list if Hub should be served."
       elif (( listed )); then adv="Hub is already on an allow list in the payload installed on this Mac, so check that this is the payload version you edited, and that Safari SSO (browser_sso_interaction_enabled) is not turned off."
       else adv="Options: add Hub's bundle ID to AppAllowList or its prefix to AppPrefixAllowList; Enable_SSO_On_All_ManagedApps = 1 admits only MDM-managed apps (Microsoft)."; fi
-      vcheck WARN hub-allow-list "Microsoft's extension turned Hub away ${rej_total} time(s): ${rej_txt% }. Its log says 'not in the allow list or Safari SSO is disabled'. Payload: Hub on an allow list = ${listed_txt}; on AppBlockList = ${blocked_txt}; Enable_SSO_On_All_ManagedApps = ${all_managed:-unset}; browser_sso_interaction_enabled = ${sso_on:-unset} (Microsoft documents 1 as the default). ${adv} The effect on users was not measured."
+      vcheck INFO hub-allow-list "Decision for you (no action is needed unless Hub's Microsoft sign-in should use Platform SSO): Microsoft's extension turned Hub away ${rej_total} time(s): ${rej_txt% }. Its log says 'not in the allow list or Safari SSO is disabled'. Payload: Hub on an allow list = ${listed_txt}; on AppBlockList = ${blocked_txt}; Enable_SSO_On_All_ManagedApps = ${all_managed:-unset}; browser_sso_interaction_enabled = ${sso_on:-unset} (Microsoft documents 1 as the default). ${adv} The effect on users was not measured."
     elif (( blocked )); then
       vcheck INFO hub-allow-list "Hub's bundle ID is on AppBlockList, so Microsoft's extension will not serve it; no rejection of Hub was logged in this window"
     elif (( listed )); then
@@ -2569,7 +2710,7 @@ hub_authorization_check() {
   if (( ${bad:-0} > 0 && ${own_bad:-0} > 0 )); then
     vcheck FAIL hub-authorization "${bad} of ${total} Hub SOAuthorization request(s) ended in an error, including requests to Hub's own extension: ${detail}"
   elif (( ${bad:-0} > 0 )); then
-    vcheck WARN hub-authorization "${bad} of ${total} Hub SOAuthorization request(s) ended in an error: ${detail}${ok:-0} ended with error: (null). The effect on users was not measured; see hub-allow-list when Microsoft's extension is the one rejecting them"
+    vcheck INFO hub-authorization "${bad} of ${total} Hub SOAuthorization request(s) ended in an error: ${detail}${ok:-0} ended with error: (null). The effect on users was not measured; see hub-allow-list when Microsoft's extension is the one rejecting them"
   elif (( ${open:-0} > 0 )); then
     vcheck WARN hub-authorization "${open} of ${total} Hub SOAuthorization request(s) have no completion line in the window; ${ok:-0} ended with error: (null)"
   else
@@ -2620,6 +2761,7 @@ fi
 log "Collector v$SCRIPT_VERSION started on $HOST (macOS $OS_VER), console user: ${CONSOLE_USER:-none}"
 run_redirect_url_tests   # the first tests of a full run, shown live
 rurl_continue_prompt
+size_log_window
 
 # =============================================================================
 # 00 - system context
@@ -2720,12 +2862,12 @@ log "  profiles output passed through secret redactor"
 
 PRED_MDM='(process == "mdmclient" OR process == "profiled") AND (eventMessage CONTAINS[c] "extensiblesso" OR eventMessage CONTAINS[c] "PlatformSSO" OR eventMessage CONTAINS[c] "InstallProfile" OR eventMessage CONTAINS[c] "Installing profile" OR eventMessage CONTAINS[c] "RemoveProfile" OR eventMessage CONTAINS[c] "Removing profile" OR eventMessage CONTAINS[c] "Removed profile")'
 capture "$D3/log-show-mdm-profile-install.txt" \
-        /usr/bin/log show --info --debug --style default --last "$LOG_WINDOW" --predicate "$PRED_MDM"
+        /usr/bin/log show --info --debug --style default --last "$MDM_LOG_WINDOW" --predicate "$PRED_MDM"
 
 # everything the MDM server asked this Mac to do, and how the Mac answered (no polling noise): shows where an enrollment waited
 PRED_MDMCMD='process == "mdmclient" AND (eventMessage CONTAINS[c] "Processing server request" OR eventMessage CONTAINS[c] "CPF_InstallProfile" OR eventMessage CONTAINS[c] "MDMClientError" OR eventMessage CONTAINS[c] "(PUT) [Acknowledged(" OR eventMessage CONTAINS[c] "(PUT) [Error(" OR eventMessage CONTAINS[c] "(PUT) [NotNow(")'
 capture "$D3/log-show-mdm-commands.txt" \
-        /usr/bin/log show --info --debug --style default --last "$LOG_WINDOW" --predicate "$PRED_MDMCMD"
+        /usr/bin/log show --info --debug --style default --last "$MDM_LOG_WINDOW" --predicate "$PRED_MDMCMD"
 
 # the installer's own log names each app that was installed and when; the MDM command lines do not name the app
 capture "$D3/install-log-events.txt" \
@@ -2743,7 +2885,7 @@ capture "$D4/log-show-psso-all.txt" \
 capture "$D4/log-show-appsso-PODiagnostics.txt" \
         /usr/bin/log show --info --debug --style compact --last "$LOG_WINDOW" --predicate "$PRED_POD"
 capture "$D4/log-show-registration-timeline-with-tz.txt" \
-        /usr/bin/log show --info --debug --style default --last "$LOG_WINDOW" --predicate "$PRED_TL"
+        /usr/bin/log show --info --debug --style default --last "$MDM_LOG_WINDOW" --predicate "$PRED_TL"
 for f in "$D3/log-show-mdm-profile-install.txt" "$D3/log-show-mdm-commands.txt" "$D4"/log-show-*.txt; do redact_log_secrets "$f"; done
 log "  OAuth code/token URL parameters in log slices redacted"
 {
@@ -2817,7 +2959,8 @@ log "== 06 validation tests (automated)"
 S_STATE="$D2/app-sso-platform-state.txt"
 XMLP="$D3/profiles-show-all-xml.txt"
 FLAT="$STAGE/ssoflat.txt"
-plist_flat "$XMLP" '(\.PayloadType$|\.ExtensionIdentifier$|\.TeamIdentifier$|\.Type$|\.Realm$|\.Hosts\[|\.URLs\[|\.PlatformSSO\.|\.ExtensionData\.|OktaVerify\.)' > "$FLAT"
+plist_flat "$XMLP" '(\.PayloadType$|\.ExtensionIdentifier$|\.TeamIdentifier$|\.Type$|\.Realm$|\.Hosts\[|\.URLs\[|\.PlatformSSO\.|\.ExtensionData\.|OktaVerify\.|\.AuthenticationMethod$|\.ProfileDisplayName$|\.ProfileInstallDate$)' > "$FLAT"
+SSO_PROFILE_BASES=$(sso_prefixes | while IFS= read -r p; do pp="${p%%.ProfileItems*}"; n=$(flat_val "$pp" ProfileDisplayName); [[ -n "$n" ]] && print -r -- "${n%%/V_[0-9]*}"; done | /usr/bin/sort -u)   # the profiles that carry an Extensible SSO payload, without their /V_n suffix
 VAL="$STAGE/validation.txt"; : > "$VAL"; UNRESOLVED_HOSTS=""
 if [[ -s "$RURL_Q" ]]; then   # the Redirect URL tests ran first; their results join the list
   while IFS='|' read -r st nm det; do [[ -z "$st" ]] && continue; vcheck "$st" "$nm" "$det"; done < "$RURL_Q"
@@ -2963,6 +3106,8 @@ check_network_agents
 check_signin_endpoint
 check_setup_assistant_keys
 check_okta
+check_touch_id
+check_payload_lint
 check_psso_leftovers
 check_kerberos
 appsso_logging_status
@@ -2989,7 +3134,7 @@ log "== quick findings"
   print "        ${RESULT_WHY}"
   print ""
   print "QUICK FINDINGS - automated greps only; confirm in the raw files"
-  print "Generated: $(/bin/date -u '+%m-%d-%Y %H:%M:%S UTC') (device clock $(/bin/date '+%H:%M:%S %Z'))   Log window: $LOG_WINDOW"
+  print "Generated: $(/bin/date -u '+%m-%d-%Y %H:%M:%S UTC') (device clock $(/bin/date '+%H:%M:%S %Z'))   Log window: $LOG_WINDOW$( [[ "$MDM_LOG_WINDOW" != "$LOG_WINDOW" ]] && print " (MDM and registration timeline slices: $MDM_LOG_WINDOW)")"
   print "Times: UTC unless marked 'device clock'. Time zone now: ${TZ_NOW:-unknown}, set automatically: $(case "$TZ_AUTO" in 1) print yes ;; 0) print no ;; *) print unknown ;; esac)."
   if [[ -n "$TZ_CHANGES" ]]; then
     while IFS='|' read -r _e tzo tzn tzu tzc1 tzc2; do
@@ -3192,7 +3337,8 @@ rewrite_renamed_names "$WORK/Apple_PSSO_Configuration.txt" "$WORK/collector.log"
 
 cat > "$WORK/README.txt" <<EOF
 PSSO + Hub diagnostic bundle - generated by ${SCRIPT_PATH:t} v$SCRIPT_VERSION
-Host: $HOST   macOS: $OS_VER   Console user: ${CONSOLE_USER:-none}   Log window: $LOG_WINDOW${MODE_README:+   $MODE_README}
+Host: $HOST   macOS: $OS_VER   Console user: ${CONSOLE_USER:-none}   Log window: $LOG_WINDOW$( [[ "$MDM_LOG_WINDOW" != "$LOG_WINDOW" ]] && print " (MDM and registration timeline slices: $MDM_LOG_WINDOW)")${MODE_README:+   $MODE_README}
+Zips: $PKG_NOTE
 Collected: $(/bin/date -u '+%m-%d-%Y %H:%M:%S UTC') (device clock $(/bin/date '+%H:%M:%S %Z')). Times the script writes are UTC. Raw log slices use the Mac's clock, some with an offset and some without; see the Times lines in Apple_PSSO_Configuration.txt.
 RESULT: ${RESULT_LINE}
         ${RESULT_WHY}
@@ -3217,20 +3363,35 @@ local-account files in folders 04 and 02. macOS masks loginUserName (b***n@domai
 argument as <private>; the exact full string typed into the IdP sign-in page is not in these logs.
 
 Privacy: logs contain usernames/UPNs/device identifiers. OAuth code/token URL parameters are redacted in the log slices,
-but hubcli's Hublogs.tar.gz and the sysdiagnose are NOT redacted. Share on a need-to-know basis.
+but hubcli's Hublogs.tar.gz and the sysdiagnose are NOT redacted (by default they are in the separate -heavy zip). Share on a need-to-know basis.
 EOF
 
+(( SINGLE_ZIP )) || split_heavy_files
 ( cd "$WORK" && /usr/bin/find . -type f -exec /usr/bin/stat -f '%z  %N' {} + | /usr/bin/sort -k2 ) > "$WORK/MANIFEST.txt"
 
 # =============================================================================
 # package -> same directory as this script
 # =============================================================================
 ZIP="$OUT_DIR/${BUNDLE}-${RESULT_CODE}.zip"
+HEAVY_ZIP="$OUT_DIR/${BUNDLE}-${RESULT_CODE}-heavy.zip"
 log "== packaging -> $ZIP"
 if /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$WORK" "$ZIP"; then
   [[ -n "$CONSOLE_USER" ]] && /usr/sbin/chown "$CONSOLE_USER" "$ZIP"
+  HEAVY_MSG=""
+  if [[ -n "${HEAVY_LIST:-}" ]] && (( ! LIGHT_ONLY )); then
+    log "== packaging the large files -> $HEAVY_ZIP"
+    if /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$HEAVY_WORK" "$HEAVY_ZIP"; then
+      [[ -n "$CONSOLE_USER" ]] && /usr/sbin/chown "$CONSOLE_USER" "$HEAVY_ZIP"
+      HEAVY_MSG="Large files: $HEAVY_ZIP  ($(/usr/bin/du -h "$HEAVY_ZIP" | /usr/bin/awk '{print $1}')) - send it only if asked"
+    else
+      problem "could not create $HEAVY_ZIP (is the folder writable?)"
+    fi
+  elif [[ -n "${HEAVY_LIST:-}" ]]; then
+    HEAVY_MSG="The sysdiagnose and Hub archive were not kept (--light-only)"
+  fi
   print ""
   print "DONE: $ZIP  ($(/usr/bin/du -h "$ZIP" | /usr/bin/awk '{print $1}'))"
+  [[ -n "$HEAVY_MSG" ]] && print "      $HEAVY_MSG"
   print "RESULT: ${RESULT_LINE}"
   print "        ${RESULT_WHY}"
   if (( ${#NOTES} )); then print "Notes (informational):"; for n in "${NOTES[@]}"; do print "  - $n"; done; fi
