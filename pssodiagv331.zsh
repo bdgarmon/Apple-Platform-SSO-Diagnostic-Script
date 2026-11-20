@@ -1,5 +1,5 @@
 #!/bin/zsh
-# pssodiagv330.zsh v3.3.0
+# pssodiagv331.zsh v3.3.1
 # Options:
 #   -y, --yes               skip the confirmation prompt
 #   -n, --dry-run           print the plan and exit; collect nothing
@@ -18,7 +18,7 @@
 #       --open-fda-settings open System Settings > Full Disk Access, print the steps, exit
 #   -h, --help
 
-SCRIPT_VERSION="3.3.0"
+SCRIPT_VERSION="3.3.1"
 SCRIPT_PATH=${0:A}
 SCRIPT_DIR=${SCRIPT_PATH:h}
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -965,7 +965,7 @@ check_ade_profile() {   # what the ADE profile on this Mac says: its ID and the 
 uem_conditions() {   # the conditions Omnissa is fixing in UEM console 2701: what this Mac's log can show about each (one-line checks, plus a block for the findings file)
   local out="$STAGE/uem-conditions.txt" UEM_FIX="UEM console 2701" v1 f1 n1 v2 f2 n2 v3 f3 n3 f4 vi dsm pas onb d2 sso2 hp gp
   UEM_COND_FILE=""; : > "$out"
-  (( PSSO_CFG )) || return 0
+  psso_configured || return 0   # PSSO_CFG is only computed later in section 06, so ask the function that computes it
   if [[ -z "$MDM_ENROLL" ]]; then
     vcheck INFO uem-conditions "not evaluated: no ADE enrollment made in Setup Assistant was found in the log window, and these conditions concern the first minutes after an ADE enrollment (use --log-window to reach further back)"
     return 0
