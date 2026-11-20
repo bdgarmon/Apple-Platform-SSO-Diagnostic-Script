@@ -1,6 +1,6 @@
 # pssodiag: a Platform SSO diagnostic tool for macOS
 
-`pssodiagv330.zsh` is a single-file zsh script that answers one question on a Mac:
+`pssodiagv331.zsh` is a single-file zsh script that answers one question on a Mac:
 
 > **Did Apple Platform SSO (PSSO) registration succeed, and is it working the way it was designed to?**
 
@@ -10,7 +10,7 @@ It was built for troubleshooting PSSO with **Microsoft Entra ID (the Intune Comp
 
 A companion troubleshooting guide, built around this script, is on the [After Six Computers blog](https://aftersixcomputers.com/how-to-troubleshoot-apple-platform-sso/).
 
-The current version is **3.3.0**. The version is in the script's file name and on the second line of the script.
+The current version is **3.3.1**. The version is in the script's file name and on the second line of the script.
 
 ---
 
@@ -70,7 +70,7 @@ The checks are automated greps and probes. They are a starting point, **not a ve
 
 ### Granting Full Disk Access
 
-1. Open **System Settings > Privacy & Security > Full Disk Access**. (`sudo ./pssodiagv330.zsh --open-fda-settings` opens the pane for you.)
+1. Open **System Settings > Privacy & Security > Full Disk Access**. (`sudo ./pssodiagv331.zsh --open-fda-settings` opens the pane for you.)
 2. Turn on the terminal app you use (Terminal, iTerm and so on), adding it with **+** if needed.
 3. Quit the terminal app completely (Command-Q) and reopen it. macOS applies the permission only to terminals started afterwards.
 
@@ -80,19 +80,19 @@ The checks are automated greps and probes. They are a starting point, **not a ve
 
 ```bash
 # 1. Make the script executable
-chmod +x ./pssodiagv330.zsh
+chmod +x ./pssodiagv331.zsh
 
 # 2. Optional: syntax check
-zsh -n ./pssodiagv330.zsh && echo OK
+zsh -n ./pssodiagv331.zsh && echo OK
 
 # 3. Optional: show the plan without collecting anything
-sudo ./pssodiagv330.zsh --dry-run
+sudo ./pssodiagv331.zsh --dry-run
 
 # 4. Run it (it asks "Proceed? [y/N]" unless you pass --yes)
-sudo ./pssodiagv330.zsh
+sudo ./pssodiagv331.zsh
 ```
 
-A file downloaded through a browser, including GitHub's download button, arrives **without the executable bit**, which is why step 1 is there. To skip it, run the script through the interpreter instead: `sudo zsh ./pssodiagv330.zsh`. It takes the same options, because the script finds its own path and does not need the bit. A zip keeps the bit inside the archive, so a script unzipped from `pssodiagv330.zip` is already executable. A `git clone` keeps it too, if the file was committed as executable (`git update-index --chmod=+x pssodiagv330.zsh` before the commit).
+A file downloaded through a browser, including GitHub's download button, arrives **without the executable bit**, which is why step 1 is there. To skip it, run the script through the interpreter instead: `sudo zsh ./pssodiagv331.zsh`. It takes the same options, because the script finds its own path and does not need the bit. A zip keeps the bit inside the archive, so a script unzipped from `pssodiagv331.zip` is already executable. A `git clone` keeps it too, if the file was committed as executable (`git update-index --chmod=+x pssodiagv331.zsh` before the commit).
 
 When it finishes it prints the path of the zip, which is written to **the folder the script is in** unless you pass `--output-dir`. The `RESULT:` line, any informational notes and any collection problems are printed underneath.
 
@@ -100,27 +100,27 @@ When it finishes it prints the path of the zip, which is written to **the folder
 
 ```bash
 # Fast run right after a failed registration attempt
-sudo ./pssodiagv330.zsh --tests-only
+sudo ./pssodiagv331.zsh --tests-only
 
 # Run ONLY the Redirect URL network tests (no collection, no zip), for example after a firewall change
-sudo ./pssodiagv330.zsh --test-url
+sudo ./pssodiagv331.zsh --test-url
 
 # ...and also test some URLs of your own
-sudo ./pssodiagv330.zsh --test-url https://login.microsoftonline.com/ https://example-tenant.example.com/
+sudo ./pssodiagv331.zsh --test-url https://login.microsoftonline.com/ https://example-tenant.example.com/
 
 # Also check, with a Safari test, whether specific sites are handed to the SSO extension
-sudo ./pssodiagv330.zsh --tests-only \
+sudo ./pssodiagv331.zsh --tests-only \
   --handoff-url https://login.microsoftonline.com/ \
   --handoff-url https://example-tenant.example.com/
 
 # Kerberos web test against an internal site (runs curl as the logged-in user)
-sudo ./pssodiagv330.zsh --kerberos-url https://intranet.example.com/
+sudo ./pssodiagv331.zsh --kerberos-url https://intranet.example.com/
 
 # Write the zip somewhere else
-sudo ./pssodiagv330.zsh --output-dir /Users/Shared/diag
+sudo ./pssodiagv331.zsh --output-dir /Users/Shared/diag
 
 # Unattended, with a longer log window
-sudo ./pssodiagv330.zsh --yes --log-window 3d
+sudo ./pssodiagv331.zsh --yes --log-window 3d
 ```
 
 ---
@@ -130,14 +130,14 @@ sudo ./pssodiagv330.zsh --yes --log-window 3d
 macOS keeps debug messages for the Platform SSO log subsystem only briefly unless it is asked to persist them. If you can reproduce the problem:
 
 1. **Turn on persistent debug logging.**
-   `sudo ./pssodiagv330.zsh --debug-logging on`
+   `sudo ./pssodiagv331.zsh --debug-logging on`
    It prints the exact `log config` command, asks first, changes the setting for the `com.apple.AppSSO` subsystem only, and exits without collecting anything. (For the Microsoft extension, Microsoft also suggests Company Portal > Settings > *Turn on advanced logging*.)
 2. **Reproduce the problem.**
 3. **Run the script right afterwards.**
-   `sudo ./pssodiagv330.zsh --tests-only`
+   `sudo ./pssodiagv331.zsh --tests-only`
    This skips `sysdiagnose` and the `hubcli` archive and uses a three hour log window, so the evidence reflects the attempt you just made.
 4. **Turn logging back to the default.**
-   `sudo ./pssodiagv330.zsh --debug-logging off`
+   `sudo ./pssodiagv331.zsh --debug-logging off`
 
 The script also reports, in every run, whether AppSSO debug logging is currently persisted (`appsso-debug-logging`), and the DIAGNOSIS section suggests the steps above when a failure would have benefited from it.
 
@@ -173,7 +173,7 @@ After those, the script tests every **additional** Redirect URL the payload list
 - A required URL that fails, or a required URL missing from the payload, is a **FAIL**. A failing optional or additional URL is a **WARN**. An additional entry that does not resolve and does not look like a typo is **INFO**, because an entry can be a URL prefix that macOS matches and nothing is served there.
 - The tests use the macOS system HTTPS proxy when one is set. With a proxy auto-config (PAC) file they connect directly, and the output says so, because a failure can then mean the Mac needs the PAC's proxy.
 
-**Running them on their own.** `sudo ./pssodiagv330.zsh --test-url` runs only these tests and exits: no collection, no zip, no prompt, and no Full Disk Access needed (it does need `sudo`, to read the installed profiles). Put URLs after it to test those too (at most 10). The exit status is `0` when everything is fine and `1` when a required URL is unreachable or missing, or a URL you listed fails. Use it to re-test after a firewall or profile change.
+**Running them on their own.** `sudo ./pssodiagv331.zsh --test-url` runs only these tests and exits: no collection, no zip, no prompt, and no Full Disk Access needed (it does need `sudo`, to read the installed profiles). Put URLs after it to test those too (at most 10). The exit status is `0` when everything is fine and `1` when a required URL is unreachable or missing, or a URL you listed fails. Use it to re-test after a firewall or profile change.
 
 **In a full run** they come first. If a required URL fails, the script asks `Continue with the full collection? [Y/n]` so you can stop and fix the network first; `--yes` continues without asking. The results are in the bundle as the `redirect-url:*` and `redirect-url-payload:*` checks, the full transcript is `06-validation/redirect-url-tests.txt`, and the DIAGNOSIS explains any failure.
 
@@ -538,8 +538,8 @@ The AASA, identity provider and sign-in probes use `curl` and do not use the sys
 
 The script's version is in two places that change together on every release:
 
-- the **file name**: `pssodiagv` followed by the version without dots, for example version `3.1.0` is `pssodiagv330.zsh`
-- the **header comment** on line 2, for example `# pssodiagv330.zsh v3.3.0`
+- the **file name**: `pssodiagv` followed by the version without dots, for example version `3.1.0` is `pssodiagv331.zsh`
+- the **header comment** on line 2, for example `# pssodiagv331.zsh v3.3.1`
 
 The bundle's `README.txt` and `collector.log` also record the script version that produced them, which makes it easy to confirm which file someone actually ran.
 
