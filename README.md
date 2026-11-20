@@ -1,6 +1,6 @@
 # pssodiag: a Platform SSO diagnostic tool for macOS
 
-`pssodiagv320.zsh` is a single-file zsh script that answers one question on a Mac:
+`pssodiagv330.zsh` is a single-file zsh script that answers one question on a Mac:
 
 > **Did Apple Platform SSO (PSSO) registration succeed, and is it working the way it was designed to?**
 
@@ -10,7 +10,7 @@ It was built for troubleshooting PSSO with **Microsoft Entra ID (the Intune Comp
 
 A companion troubleshooting guide, built around this script, is on the [After Six Computers blog](https://aftersixcomputers.com/how-to-troubleshoot-apple-platform-sso/).
 
-The current version is **3.2.0**. The version is in the script's file name and on the second line of the script.
+The current version is **3.3.0**. The version is in the script's file name and on the second line of the script.
 
 ---
 
@@ -42,14 +42,14 @@ The current version is **3.2.0**. The version is in the script's file name and o
 1. **Collects evidence**
    - PSSO state from `app-sso platform -s`, the extension registration from `pluginkit`, and the local accounts.
    - The configuration profiles MDM delivered, including the Extensible SSO and Associated Domains payloads, and their install, update and removal events.
-   - An **MDM command and app install timeline**: every request the MDM server sent this Mac, how the Mac answered, which profile each install was, and the apps the installer actually installed, by name (from `/var/log/install.log`), all in one time order. Each MDM-managed install is paired with the server app-install command that came just before it and shows the installer package it ran; app-install commands after the release are listed too. After an ADE enrollment made in Setup Assistant it lists them in order, calls out long quiet gaps, marks the SSO profile, says whether the SSO profile arrived before or after `DeviceConfigured`, names any app installed more than once before Setup Assistant was released, and flags an installer package that ran more than once. That shows where a "stuck in Setup Assistant" enrollment waited and what it was doing.
+   - An **MDM command and app install timeline** (which also lists the commands Intelligent Hub received on its agent channel): every request the MDM server sent this Mac, how the Mac answered, which profile each install was, and the apps the installer actually installed, by name (from `/var/log/install.log`), all in one time order. Each MDM-managed install is paired with the server app-install command that came just before it and shows the installer package it ran; app-install commands after the release are listed too. After an ADE enrollment made in Setup Assistant it lists them in order, calls out long quiet gaps, marks the SSO profile, says whether the SSO profile arrived before or after `DeviceConfigured`, names any app installed more than once before Setup Assistant was released, and flags an installer package that ran more than once. That shows where a "stuck in Setup Assistant" enrollment waited and what it was doing.
    - Unified-log slices for PSSO registration attempts, with every timestamp converted to UTC. macOS prints each log line in the time zone in effect when it was written, which misleads on a Mac that changes zone during Setup Assistant.
    - The identity provider extension's own log files (the Company Portal SSO extension, Okta Verify) when present, and Intelligent Hub's `hubcli` archive and unified log when Hub is installed.
    - A `sysdiagnose` archive, plus a record of exactly how it was captured, so it can be handed to Apple Support.
 2. **Tests the Redirect URLs first.** Before it collects anything, it tests that the URLs in a Redirect-type SSO payload are online and reachable from this Mac, and that the payload lists the URLs the vendor requires. See [The Redirect URL network tests](#the-redirect-url-network-tests).
 3. **Runs automated checks.** Registration state, the profile against the device, associated domains, TLS inspection, identity provider endpoints, clock skew, running web filters and VPNs, vendor-specific profile checks, Kerberos, leftover state, and live Safari tests. See [Checks it runs](#checks-it-runs).
 4. **Answers in plain English.** The summary file, the end of the run and the zip name all carry a `RESULT:` line (registered or not, and why). A DIAGNOSIS section turns each recognized failure pattern into "what we see / what it means / what to do".
-5. **Packages the evidence** as a small `PSSO-Diag-<hostname>-<timestamp>-<RESULT>.zip` that you send, plus a separate `...-heavy.zip` holding the `sysdiagnose` and the Hub archive, which you send only if asked. `--single-zip` puts everything in one zip.
+5. **Packages the evidence** as a small `PSSO-Diag-<hostname>-<timestamp>-<RESULT>.zip` that you send, plus a separate `...-heavy.zip` holding the Apple `sysdiagnose` (the one very large file), which you send only if asked. Everything else, including the Hub archive, is in the small zip. `--single-zip` puts everything in one zip.
 
 The checks are automated greps and probes. They are a starting point, **not a verdict**. Everything they read is in the zip so you can confirm it.
 
@@ -70,7 +70,7 @@ The checks are automated greps and probes. They are a starting point, **not a ve
 
 ### Granting Full Disk Access
 
-1. Open **System Settings > Privacy & Security > Full Disk Access**. (`sudo ./pssodiagv320.zsh --open-fda-settings` opens the pane for you.)
+1. Open **System Settings > Privacy & Security > Full Disk Access**. (`sudo ./pssodiagv330.zsh --open-fda-settings` opens the pane for you.)
 2. Turn on the terminal app you use (Terminal, iTerm and so on), adding it with **+** if needed.
 3. Quit the terminal app completely (Command-Q) and reopen it. macOS applies the permission only to terminals started afterwards.
 
@@ -80,17 +80,19 @@ The checks are automated greps and probes. They are a starting point, **not a ve
 
 ```bash
 # 1. Make the script executable
-chmod +x ./pssodiagv320.zsh
+chmod +x ./pssodiagv330.zsh
 
 # 2. Optional: syntax check
-zsh -n ./pssodiagv320.zsh && echo OK
+zsh -n ./pssodiagv330.zsh && echo OK
 
 # 3. Optional: show the plan without collecting anything
-sudo ./pssodiagv320.zsh --dry-run
+sudo ./pssodiagv330.zsh --dry-run
 
 # 4. Run it (it asks "Proceed? [y/N]" unless you pass --yes)
-sudo ./pssodiagv320.zsh
+sudo ./pssodiagv330.zsh
 ```
+
+A file downloaded through a browser, including GitHub's download button, arrives **without the executable bit**, which is why step 1 is there. To skip it, run the script through the interpreter instead: `sudo zsh ./pssodiagv330.zsh`. It takes the same options, because the script finds its own path and does not need the bit. A zip keeps the bit inside the archive, so a script unzipped from `pssodiagv330.zip` is already executable. A `git clone` keeps it too, if the file was committed as executable (`git update-index --chmod=+x pssodiagv330.zsh` before the commit).
 
 When it finishes it prints the path of the zip, which is written to **the folder the script is in** unless you pass `--output-dir`. The `RESULT:` line, any informational notes and any collection problems are printed underneath.
 
@@ -98,27 +100,27 @@ When it finishes it prints the path of the zip, which is written to **the folder
 
 ```bash
 # Fast run right after a failed registration attempt
-sudo ./pssodiagv320.zsh --tests-only
+sudo ./pssodiagv330.zsh --tests-only
 
 # Run ONLY the Redirect URL network tests (no collection, no zip), for example after a firewall change
-sudo ./pssodiagv320.zsh --test-url
+sudo ./pssodiagv330.zsh --test-url
 
 # ...and also test some URLs of your own
-sudo ./pssodiagv320.zsh --test-url https://login.microsoftonline.com/ https://example-tenant.example.com/
+sudo ./pssodiagv330.zsh --test-url https://login.microsoftonline.com/ https://example-tenant.example.com/
 
 # Also check, with a Safari test, whether specific sites are handed to the SSO extension
-sudo ./pssodiagv320.zsh --tests-only \
+sudo ./pssodiagv330.zsh --tests-only \
   --handoff-url https://login.microsoftonline.com/ \
   --handoff-url https://example-tenant.example.com/
 
 # Kerberos web test against an internal site (runs curl as the logged-in user)
-sudo ./pssodiagv320.zsh --kerberos-url https://intranet.example.com/
+sudo ./pssodiagv330.zsh --kerberos-url https://intranet.example.com/
 
 # Write the zip somewhere else
-sudo ./pssodiagv320.zsh --output-dir /Users/Shared/diag
+sudo ./pssodiagv330.zsh --output-dir /Users/Shared/diag
 
 # Unattended, with a longer log window
-sudo ./pssodiagv320.zsh --yes --log-window 3d
+sudo ./pssodiagv330.zsh --yes --log-window 3d
 ```
 
 ---
@@ -128,14 +130,14 @@ sudo ./pssodiagv320.zsh --yes --log-window 3d
 macOS keeps debug messages for the Platform SSO log subsystem only briefly unless it is asked to persist them. If you can reproduce the problem:
 
 1. **Turn on persistent debug logging.**
-   `sudo ./pssodiagv320.zsh --debug-logging on`
+   `sudo ./pssodiagv330.zsh --debug-logging on`
    It prints the exact `log config` command, asks first, changes the setting for the `com.apple.AppSSO` subsystem only, and exits without collecting anything. (For the Microsoft extension, Microsoft also suggests Company Portal > Settings > *Turn on advanced logging*.)
 2. **Reproduce the problem.**
 3. **Run the script right afterwards.**
-   `sudo ./pssodiagv320.zsh --tests-only`
+   `sudo ./pssodiagv330.zsh --tests-only`
    This skips `sysdiagnose` and the `hubcli` archive and uses a three hour log window, so the evidence reflects the attempt you just made.
 4. **Turn logging back to the default.**
-   `sudo ./pssodiagv320.zsh --debug-logging off`
+   `sudo ./pssodiagv330.zsh --debug-logging off`
 
 The script also reports, in every run, whether AppSSO debug logging is currently persisted (`appsso-debug-logging`), and the DIAGNOSIS section suggests the steps above when a failure would have benefited from it.
 
@@ -171,7 +173,7 @@ After those, the script tests every **additional** Redirect URL the payload list
 - A required URL that fails, or a required URL missing from the payload, is a **FAIL**. A failing optional or additional URL is a **WARN**. An additional entry that does not resolve and does not look like a typo is **INFO**, because an entry can be a URL prefix that macOS matches and nothing is served there.
 - The tests use the macOS system HTTPS proxy when one is set. With a proxy auto-config (PAC) file they connect directly, and the output says so, because a failure can then mean the Mac needs the PAC's proxy.
 
-**Running them on their own.** `sudo ./pssodiagv320.zsh --test-url` runs only these tests and exits: no collection, no zip, no prompt, and no Full Disk Access needed (it does need `sudo`, to read the installed profiles). Put URLs after it to test those too (at most 10). The exit status is `0` when everything is fine and `1` when a required URL is unreachable or missing, or a URL you listed fails. Use it to re-test after a firewall or profile change.
+**Running them on their own.** `sudo ./pssodiagv330.zsh --test-url` runs only these tests and exits: no collection, no zip, no prompt, and no Full Disk Access needed (it does need `sudo`, to read the installed profiles). Put URLs after it to test those too (at most 10). The exit status is `0` when everything is fine and `1` when a required URL is unreachable or missing, or a URL you listed fails. Use it to re-test after a firewall or profile change.
 
 **In a full run** they come first. If a required URL fails, the script asks `Continue with the full collection? [Y/n]` so you can stop and fix the network first; `--yes` continues without asking. The results are in the bundle as the `redirect-url:*` and `redirect-url-payload:*` checks, the full transcript is `06-validation/redirect-url-tests.txt`, and the DIAGNOSIS explains any failure.
 
@@ -204,8 +206,8 @@ The `Times:` lines at the top of the findings give the zone now, whether the Mac
 | `--tests-only` | Fast mode: no sysdiagnose, no `hubcli` archive, and a 3 hour log window unless `--log-window` is given. Use it right after a failed attempt. |
 | `--no-browser-test` | Skip the background Safari navigation tests (the static checks still run). |
 | `--output-dir <path>` | Folder for the finished zip. Default: the folder the script is in. The folder is created if needed and checked for write access before anything is collected. |
-| `--single-zip` | Put everything in **one** zip, as releases before 3.2 did. The default writes a small zip plus a separate `-heavy` zip. |
-| `--light-only` | Write only the small zip. The `sysdiagnose` and the Hub archive are not kept, so add `--skip-sysdiagnose` to avoid waiting for a sysdiagnose you will not use. Cannot be combined with `--single-zip`. |
+| `--single-zip` | Put everything in **one** zip, as releases before 3.2 did. The default writes a small zip plus a separate `-heavy` zip that holds only the sysdiagnose. |
+| `--light-only` | Write only the small zip. The `sysdiagnose` is not kept, so add `--skip-sysdiagnose` to avoid waiting for a sysdiagnose you will not use. Cannot be combined with `--single-zip`. |
 | `--test-url [url ...]` | Run **only** the [Redirect URL network tests](#the-redirect-url-network-tests), then exit: no collection, no zip, no prompt, no Full Disk Access needed. URLs listed after it are tested too (at most 10, each `http://` or `https://` without spaces). Exit status `0` when all is well, `1` when a required URL is unreachable or missing or a URL you listed fails. |
 | `--handoff-url <url>` | Also test, with static checks and a Safari test, whether this URL is handed to the SSO extension. Repeatable, at most 10; each must be an `http://` or `https://` URL without spaces. (Releases before 3.1 called it `--test-url`.) |
 | `--kerberos-url <url>` | Kerberos web test: run `curl --negotiate` as the logged-in user, then look in `klist` for a service ticket for `HTTP/<host>`. Repeatable, at most 3. |
@@ -240,7 +242,7 @@ The script works in a temporary staging folder under `/private/var/tmp` and remo
 
 The zip is named `PSSO-Diag-<hostname>-<YYYYMMDD-HHMMSS>-<RESULT>.zip`, where `<RESULT>` is one of `REGISTERED`, `REGISTERED-WITH-FAILURES`, `DEVICE-ONLY`, `NOT-REGISTERED`, `KERBEROS-ONLY` or `NO-PSSO`. It contains one folder with this layout:
 
-By default the large files are moved into a second zip with the same name plus `-heavy` (`PSSO-Diag-<hostname>-<timestamp>-<RESULT>-heavy.zip`). Its folder paths match the small zip, so unzipping both into one folder merges them. The small zip keeps a `MOVED-TO-HEAVY-ZIP.txt` in each folder that lists what moved, with sizes and SHA-256 values. Send the small zip first: it holds every finding and log slice. The `sysdiagnose` and the Hub archive are not redacted, which is another reason to keep them separate.
+By default the Apple `sysdiagnose`, which is the one very large file (over 100 MB), is moved into a second zip with the same name plus `-heavy` (`PSSO-Diag-<hostname>-<timestamp>-<RESULT>-heavy.zip`). **Nothing else moves**: the Hub archive stays in the small zip. The heavy zip's folder path matches the small zip, so unzipping both into one folder merges them. The small zip keeps a `MOVED-TO-HEAVY-ZIP.txt` in `01-sysdiagnose/` that lists the file with its size and SHA-256. Send the small zip first: it holds every finding and log slice. The sysdiagnose and `hubcli`'s `Hublogs.tar.gz` are not redacted, so share them on a need-to-know basis.
 
 ```text
 PSSO-Diag-<host>-<timestamp>/
@@ -248,12 +250,12 @@ PSSO-Diag-<host>-<timestamp>/
   Apple_PSSO_Configuration.txt     START HERE: RESULT, validation summary, DIAGNOSIS, then findings
   collector.log                    every command the script ran, with exit codes
   MANIFEST.txt                     every file with its size
-  MOVED-TO-HEAVY-ZIP.txt           (in a folder) what moved to the -heavy zip, with sizes and SHA-256
+  MOVED-TO-HEAVY-ZIP.txt           (in 01-sysdiagnose) the sysdiagnose that moved to the -heavy zip, with its size and SHA-256
   01-sysdiagnose/                  Apple's archive (unmodified) + how-it-was-captured record
   02-psso-state/                   app-sso state, pluginkit, local accounts, Kerberos realm info
   03-mdm-payload/                  installed profiles, SSO payload, install/update/removal log, MDM command log, app install events
   04-psso-registration-logs/       registration timeline, AppSSO config, user-name trace, extension logs
-  05-hub-logs/                     Intelligent Hub logs and health-check slice
+  05-hub-logs/                     Intelligent Hub logs, the health-check slice and the agent-channel command slice (log-show-hub-commands.txt)
   06-validation/                   evidence behind the automated checks (network probes in a subfolder)
 ```
 
@@ -282,6 +284,8 @@ RESULT: Platform SSO is NOT registered on this Mac.
 | `NOT-REGISTERED` | No registration. The second line says why: a failed attempt, a prompt nobody answered, or no attempt in the log window. |
 | `KERBEROS-ONLY` | The Mac does not use Platform SSO but has the Kerberos extension configured (for example an AD-bound Mac). The second line says whether the Kerberos checks passed. The Platform SSO checks are skipped. |
 | `NO-PSSO` | No Platform SSO configuration, and no Kerberos extension, was found on this Mac. |
+
+**What works (NOT-REGISTERED only).** When registration did not happen, the findings file, the `README.txt` in the zip and the screen at the end of the run add a short block under the result: a `WHAT WORKS` list of the checks that need no registration (sign-in and Apple server URLs reachable, Apple's associated-domains servers reachable and not intercepted, the Microsoft sign-in endpoint, the extension installed, domains approved by macOS, AASA files listing the extension, the clock), each with a count such as `5 of 5`, and a `NEEDS ATTENTION` list with every FAIL or WARN left. It is the answer to "is the network fine, and what actually stopped registration?" It is not printed for any other result.
 
 Then come the validation summary, the DIAGNOSIS section and the full list of checks (generic example):
 
@@ -326,12 +330,12 @@ Every check has a stable name (shown in `code` below), and the raw evidence is i
 - `redirect-url-tests`: recorded when there is no Redirect-type payload to test.
 
 **Registration state**
-- `device-registration`, `user-registration`, `device-keys`, `user-secure-enclave-key`, `sso-token`: registration completed, user state, key presence, token validity. When nothing is registered yet, dependent checks are skipped instead of repeating the failure. On a Mac that has **no Platform SSO configuration at all** (for example one that only uses the Kerberos extension) these checks, and `payload-extension-identity`, are skipped and the result is `KERBEROS-ONLY` or `NO-PSSO`.
-- `extension-installed`, `extension-team`: the extension is registered with `pluginkit`; when macOS reports no team ID (normal before registration completes) the team is taken from the SSO payload.
+- `device-registration`, `user-registration`, `device-keys`, `user-secure-enclave-key`, `sso-token`: registration completed, user state, key presence, token validity. When nothing is registered yet, dependent checks are skipped instead of repeating the failure. On a Mac that has **no Platform SSO configuration at all** (for example one that only uses the Kerberos extension) these checks, and `payload-extension-identity`, are skipped and the result is `KERBEROS-ONLY` or `NO-PSSO`. When the Mac is **clearly not registered at all** (the `app-sso` state was read without error and holds no extension, no device keys and no user), `user-registration` and `device-keys` are reported as SKIP with the reason "skipped because Platform SSO is not registered on this Mac", and `device-registration` stays the one FAIL that says so. A failed state read, a missing exit-code line or any sign of a partial registration (a loaded extension or device keys) never counts as "not registered", so nothing is skipped in those cases.
+- `extension-installed`, `extension-team`: the extension is registered with `pluginkit`; when macOS reports no team ID (normal before registration completes) the team is taken from the SSO payload. When the state names no extension, these checks, the association checks and the Microsoft sign-in checks use the extension and team that the Platform SSO payload names (only when exactly one payload does), and `extension-team` says so. That is why an unregistered Mac now gets a real answer from the association checks instead of a blank identity.
 - A registration timeline in UTC: prompts shown and answered, device configuration created, registration finished with `success=0/1`.
 
 **The profile against the device**
-- `payload-extension-identity`, `payload-auth-method`, `payload-urls-unique`: the payload names the extension macOS actually loaded, matches the registered login type, and lists each URL once.
+- `payload-extension-identity`, `payload-auth-method`, `payload-urls-unique`: the payload names the extension macOS actually loaded, matches the registered login type, and lists each URL once. `payload-extension-identity` always compares with the extension macOS actually loaded, never with the payload's own identity, and is skipped (with the same reason) when nothing is loaded because the Mac never registered.
 - `payload-nonplatform-accounts`, `payload-nonplatform-account:*`, `payload-accounts-not-exempt`: whether any accounts are exempted from PSSO, whether those accounts exist locally, and that the logged-in user is not exempted.
 - `payload-account-name`: reports the token-to-user mapping that is defined, without judging it.
 - `payload-app-identifier:*`: Associated Domains application IDs match the extension's host app.
@@ -345,6 +349,9 @@ Every check has a stable name (shown in `code` below), and the raw evidence is i
 - `mdm-await-configuration`: whether the enrollment profile has `AwaitDeviceConfigured` on, which makes Setup Assistant wait for the MDM server to send `DeviceConfigured` ([Apple](https://developer.apple.com/documentation/devicemanagement/token-update) documents no timeout for that wait).
 - `mdm-setup-gap`: after an ADE enrollment made in Setup Assistant (inside the log window), the longest stretch with no **delivery** command (a profile or app install) or MDM-managed install start, and the total time from enrollment to the last delivery activity. Inventory polls such as `InstalledApplicationList`, `ProfileList` and `SecurityInfo` do not count, because UEM sends one every few minutes and they hide a long wait. WARN at 10 minutes or more; the message also names any app installed more than once before the release and any installer package that ran twice, and says whether the SSO profile came before or after `DeviceConfigured`. A long app download can explain a gap; otherwise the server was waiting on something and not sending.
 - `mdm-sso-profile-delay`: how long after the ADE enrollment the SSO profile reached the Mac. WARN at 5 minutes or more. Healthy enrollments seen so far took a few seconds. Setup Assistant waits for the MDM server meanwhile. The SSO profile is found by its payload type (`com.apple.extensiblesso`) in the installed profiles, not by its name.
+- `mdm-sso-before-release`: when the SSO payload sets `EnableRegistrationDuringSetup`, whether the SSO profile was installed **before** the MDM sent `DeviceConfigured`. PASS when it was, because Setup Assistant can then run Platform SSO. **WARN** when it arrived after the release (the message gives how long after), because Setup Assistant had already finished and the Mac was registered from the normal prompt instead. Also a WARN when the enrollment profile has `AwaitDeviceConfigured = 0`, since Setup Assistant then does not wait for the MDM at all. INFO when the order cannot be told from the log window.
+- `ade-profile` (INFO): the ADE profile ID this Mac received, the UEM server it enrolled through, and the settings that matter to Setup Assistant (`AwaitDeviceConfigured`, `AutoAdvanceSetup`, supervised, mandatory, how many panes are skipped, whether the Touch ID pane is hidden). The Mac cannot show UEM's own Platform SSO setting for that ADE profile, so use the ID to find the profile in your console and confirm it.
+- `uem-condition-1-reconcile`, `uem-condition-2-hub-channel`, `uem-condition-3-dsm-retry`, `uem-condition-4-on-demand`, `uem-onboarding-intervals`, `uem-conditions` (all INFO): four server-side conditions that Omnissa is fixing in **UEM console 2701** can break Platform SSO during Setup Assistant, and a Mac log can show their symptoms and rule them out, but it cannot show UEM's own state, so each verdict is "consistent with", never proof. The same text is written as a `[Known UEM conditions ...]` block in the findings file, after the MDM timeline. The verdicts are `SIGNATURE PRESENT`, `SIGNATURE ABSENT`, `PATTERN SEEN` (an uncalibrated lead), `CANNOT TELL` (the evidence is not in the log window), `NOT APPLICABLE` and `DATA UNAVAILABLE`. (1) **Stale reconciliation status after ADE re-enrollment**: UEM keeps the previous enrollment's reconciliation status, so Platform SSO can find no assigned profiles, treat configuration as complete and queue `DeviceConfigured` before the PSSO profile is delivered. The check reports when `DeviceConfigured` was sent, when the SSO profile arrived, and when the first profile not delivered before the release arrived compared with when Hub registered with UEM. It always names the competing explanation, an ADE profile that is not set up for PSSO, which looks identical on the Mac; whether the serial was enrolled before is Data unavailable. (2) **PSSO commands delivered to Intelligent Hub instead of Apple's MDM client**: Hub's own log records every command it receives on its agent channel (requestor `com.airwatch.mac.agent`), and the check reports how many profile commands Hub received and whether each initialised the Hub-settings payload, and whether the SSO profile reached Apple's MDM client. A profile command without the Hub-settings payload is a lead, not proof, because Hub also receives other profile types. This pattern has not been checked against a confirmed case. (3) **PSSO retry creates a DSM override instead of an MDM command**: reports whether Hub logged its DSM and profile-at-scale modules as enabled (the Mac-side view of the two settings; the mapping is assumed), and whether the SSO profile stalled or never arrived while they were. A stall of that kind also happens when the ADE profile's PSSO App Bundle ID is the extension identifier instead of the app's bundle ID. The override itself is Data unavailable. (4) **On Demand profiles add delay**: Data unavailable, because the Mac's profile data holds no assignment type; the check reports how late the SSO profile arrived. `uem-onboarding-intervals` prints the spacing of `InstalledApplicationList` queries and of a re-sent installer package, so the two onboarding intervals that 2701 sets (2 and 5 minutes) can be compared before and after. `uem-conditions` says "not evaluated" when no ADE enrollment made in Setup Assistant is in the log window.
 - `mdm-notnow`: how many commands the Mac answered `NotNow` (told the server to retry later) while in Setup Assistant.
 - `timezone-change` (INFO, recorded only when it happens): the device clock offset changed during the log window, with the UTC instant and the clock times either side. See [Reading times in the logs](#reading-times-in-the-logs).
 
@@ -531,25 +538,10 @@ The AASA, identity provider and sign-in probes use `curl` and do not use the sys
 
 The script's version is in two places that change together on every release:
 
-- the **file name**: `pssodiagv` followed by the version without dots, for example version `3.1.0` is `pssodiagv320.zsh`
-- the **header comment** on line 2, for example `# pssodiagv320.zsh v3.2.0`
+- the **file name**: `pssodiagv` followed by the version without dots, for example version `3.1.0` is `pssodiagv330.zsh`
+- the **header comment** on line 2, for example `# pssodiagv330.zsh v3.3.0`
 
 The bundle's `README.txt` and `collector.log` also record the script version that produced them, which makes it easy to confirm which file someone actually ran.
-
-| Version | Added |
-|---|---|
-| 2.0 | Full Disk Access gate; numbered, ordered files; the sysdiagnose capture record; retry while another sysdiagnose is running |
-| 2.2 | Payload-versus-device checks |
-| 2.5 | `--output-dir` |
-| 2.6 | Per-pair Associated Domains checks |
-| 2.7 | `--handoff-url` (released as `--test-url`); handling of an unknown team ID before registration completes |
-| 2.8 | Running web-filter and VPN detection with start times; Microsoft sign-in redirect probe; `--tests-only` |
-| 3.0 | Plain-language `RESULT:` line and DIAGNOSIS section (result also in the zip name); AppSSO debug-logging status and `--debug-logging`; Okta checks and Okta Verify logs; payload settings listing and Setup Assistant key report; leftover-state checks; Kerberos checks and `--kerberos-url` |
-| 3.1 | The Redirect URL network tests: Microsoft, Okta and Omnissa Hub default URL lists plus the URLs in the payload, run first and shown live, and on their own with `--test-url` (the Safari test became `--handoff-url`); an exempt `root` account passes; `okta-org-url` accepts a custom domain; the MDM command timeline and the `mdm-*` checks |
-| 3.1.1 | The timeline now includes the apps the installer actually installed, by name, merged with the MDM commands and profile installs in one time order; marks the SSO profile; says whether the SSO profile arrived before or after `DeviceConfigured`; flags apps installed more than once before Setup Assistant was released; an MDM-managed install start counts as server activity for the quiet-gap check |
-| 3.1.2 | The timeline pairs each MDM-managed install with the server app-install command before it and shows the installer package; app-install commands after `DeviceConfigured` are listed; the same installer package running twice is flagged. Every time the script writes itself is UTC, the findings state the Mac's time zone and any device clock offset change (`Times:` lines and the `timezone-change` check) |
-| 3.1.3 | `mdm-setup-gap` now measures quiet gaps on delivery commands only, so UEM's five-minute inventory polls no longer hide a long wait; new `mdm-sso-profile-delay` check (enrollment to SSO profile, WARN at 5 minutes); the diagnosis adds a PSSO App Bundle ID hint when an app was sent again before the release |
-| 3.2.0 | The SSO profile is identified by its payload type, not its name; the Hub warnings (`hub-allow-list`, `hub-authorization`) are information with a decision note; new `touch-id-requirement` check; new `payload-lint` checks (a documentation-backed review of the installed SSO payload); a small zip plus a separate `-heavy` zip by default (`--single-zip`, `--light-only`); the MDM and registration timeline slices widen automatically to reach the ADE enrollment |
 
 ---
 
