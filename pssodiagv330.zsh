@@ -1,5 +1,5 @@
 #!/bin/zsh
-# pssodiagv320.zsh v3.2.0
+# pssodiagv330.zsh v3.3.0
 # Options:
 #   -y, --yes               skip the confirmation prompt
 #   -n, --dry-run           print the plan and exit; collect nothing
@@ -9,8 +9,8 @@
 #       --tests-only        fast mode: no sysdiagnose, no hubcli archive, 3h log window (run it right after a failed attempt)
 #       --no-browser-test   skip the background Safari navigation test
 #       --output-dir <path> folder for the finished .zip (default: the folder this script is in)
-#       --single-zip        put everything in ONE .zip (the default writes a small .zip plus a separate -heavy.zip for the sysdiagnose and Hub archive)
-#       --light-only        write only the small .zip; the sysdiagnose and Hub archive are not kept
+#       --single-zip        put everything in ONE .zip (the default writes a small .zip plus a separate -heavy.zip for the Apple sysdiagnose only)
+#       --light-only        write only the small .zip; the sysdiagnose is not kept
 #       --test-url [url ...] run ONLY the Redirect URL network tests (vendor default URLs + the URLs in the payload + any URLs you list), then exit
 #       --handoff-url <url> also test whether this URL is handed to the SSO extension, with a Safari test (repeatable, max 10)
 #       --kerberos-url <url> Kerberos web test: curl --negotiate as the logged-in user, then check klist (repeatable, max 3)
@@ -18,7 +18,7 @@
 #       --open-fda-settings open System Settings > Full Disk Access, print the steps, exit
 #   -h, --help
 
-SCRIPT_VERSION="3.2.0"
+SCRIPT_VERSION="3.3.0"
 SCRIPT_PATH=${0:A}
 SCRIPT_DIR=${SCRIPT_PATH:h}
 export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -94,8 +94,8 @@ for u in "${EXTRA_URLS[@]}"; do
 done
 if (( SINGLE_ZIP && LIGHT_ONLY )); then print -u2 "--single-zip and --light-only cannot be used together"; exit 2; fi
 if (( SINGLE_ZIP )); then PKG_PLAN="package everything into one .zip"; PKG_NOTE="one zip with everything."
-elif (( LIGHT_ONLY )); then PKG_PLAN="package a small .zip only (the sysdiagnose and Hub archive are not kept)"; PKG_NOTE="this is the small zip; the sysdiagnose and Hub archive were not kept (--light-only)."
-else PKG_PLAN="package a small .zip plus a separate -heavy.zip for the sysdiagnose and Hub archive"; PKG_NOTE="this is the small zip; the sysdiagnose and Hub archive, when the run made them, are in a separate -heavy zip with the same name (send it only if asked)."; fi
+elif (( LIGHT_ONLY )); then PKG_PLAN="package a small .zip only (the sysdiagnose is not kept)"; PKG_NOTE="this is the small zip; the sysdiagnose was not kept (--light-only)."
+else PKG_PLAN="package a small .zip plus a separate -heavy.zip for the Apple sysdiagnose only"; PKG_NOTE="this is the small zip; the Apple sysdiagnose, when the run made one, is in a separate -heavy zip with the same name (send it only if asked). Everything else, including the Hub archive, is in this zip."; fi
 KERB_PLAN=""
 if (( ${#KERBEROS_URLS[@]} > 3 )); then print -u2 "--kerberos-url: at most 3 URLs"; exit 2; fi
 for u in "${KERBEROS_URLS[@]}"; do
@@ -670,10 +670,12 @@ AWKEOF
 }
 
 mdm_command_timeline() {   # <mdmclient slice> [install events] -> one timeline for the findings; sets MDM_* for the checks
-  local f="$1" inst="${2:-}" cm="$STAGE/tl_common.awk" ma="$STAGE/tl_mdm.awk" ia="$STAGE/tl_inst.awk" all="$STAGE/tl_all.txt" win="$STAGE/tl_win.txt"
+  local f="$1" inst="${2:-}" hubf="${3:-}" cm="$STAGE/tl_common.awk" ma="$STAGE/tl_mdm.awk" ia="$STAGE/tl_inst.awk" ha="$STAGE/tl_hub.awk" all="$STAGE/tl_all.txt" win="$STAGE/tl_win.txt" hl
   local ep utc ts kind label detail result sig txt gap prev_ep prev_utc E_ep=0 E_utc line shown=0 released=0 sso=0 appcmd=0 sso_ep=0 sso_utc="" dc_ep=0 dc_utc="" inst_list="" pkg_list="" omitted=0
   local appcmds=0 cmdq="" first note n_inst=0 n_pair=0 n_nopair=0 isq=0
-  MDM_HAVE=0; MDM_ENROLL=""; MDM_SPAN=0; MDM_GAP_MAX=0; MDM_GAP_FROM=""; MDM_GAP_TO=""; MDM_N_REQ=0; MDM_N_APP=0; MDM_RELEASED=0; MDM_N_ACK=0; MDM_N_ERR=0; MDM_N_NOTNOW=0; MDM_REPEATS=""; MDM_PKG_REPEATS=""; MDM_SSO_ORDER=""; MDM_INST_SUMMARY=""; MDM_N_DELIV=0; MDM_N_QRY=0; MDM_SSO_DELAY=-1; MDM_SSO_UTC=""
+  MDM_HAVE=0; MDM_ENROLL=""; MDM_SPAN=0; MDM_GAP_MAX=0; MDM_GAP_FROM=""; MDM_GAP_TO=""; MDM_N_REQ=0; MDM_N_APP=0; MDM_RELEASED=0; MDM_N_ACK=0; MDM_N_ERR=0; MDM_N_NOTNOW=0; MDM_REPEATS=""; MDM_PKG_REPEATS=""; MDM_SSO_ORDER=""; MDM_INST_SUMMARY=""; MDM_N_DELIV=0; MDM_N_QRY=0; MDM_SSO_DELAY=-1; MDM_SSO_UTC=""; MDM_SSO_VS_RELEASE=""
+  MDM_ENROLL_EP=0; MDM_REL_EP=0; MDM_REL_UTC=""; MDM_SSO_EP=0; MDM_WAVE2_EP=0; MDM_WAVE2_UTC=""; MDM_PKG_GAP=""; MDM_POLL_N=0; MDM_POLL_GAPS=""
+  HUB_HAVE=0; HUB_MODS=""; HUB_PROF_N=0; HUB_PROF_AGENT_N=0; HUB_PROF_OTHER_N=0; HUB_PROF_OTHER_UTC=""; HUB_REG_EP=0; HUB_REG_UTC=""
   [[ -s "$f" ]] || return 0
   tl_write_common_awk
   /bin/cat > "$ma" <<'AWKEOF'
@@ -742,9 +744,40 @@ function flush_req() {
 }
 END { flush_req() }
 AWKEOF
-  { /usr/bin/awk -f "$cm" -f "$ma" "$f"; [[ -s "$inst" ]] && /usr/bin/awk -f "$cm" -f "$ia" "$inst"; } 2>/dev/null | /usr/bin/sort -n -s -t'|' -k1,1 > "$all"
+  /bin/cat > "$ha" <<'AWKEOF'
+{
+  if ($1 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) next
+  ts = $1 " " substr($2, 1, 8) substr($2, length($2) - 4)
+  line = $0
+  if (line ~ /Install Profile Command[ ]*$/) { np++; pe[np] = epoch_of(ts); pt[np] = ts }
+  else if (index(line, "Init profile for Agent settings payload") > 0) { na++; ae[na] = epoch_of(ts) }
+  else if (line ~ /Install Application Command[ ]*$/) emit(ts, "HUBCMD", "Install Application Command", "", "", "")
+  else if (index(line, "MDM profile installed...saving the MDM URL") > 0) emit(ts, "HUBREG", "Hub found the MDM profile and the UEM URL and began registering with UEM", "", "", "")
+  else if (index(line, "is added to enrolled user group") > 0) emit(ts, "HUBREG", "Hub added the enrolled user", "", "", "")
+  else if (match(line, /(Enabling|Disabling) module: [A-Za-z0-9_]+/)) {
+    s = substr(line, RSTART, RLENGTH); st = (s ~ /^Enabling/ ? "Enabling" : "Disabling"); sub(/^[A-Za-z]+ module: /, "", s)
+    emit(ts, "HUBMOD", st, s, "", "")
+  }
+}
+END {
+  for (i = 1; i <= np; i++) {
+    ag = 0
+    for (j = 1; j <= na; j++) if (ae[j] >= pe[i] - 1 && ae[j] <= pe[i] + 3) ag = 1
+    emit(pt[i], "HUBCMD", "Install Profile Command", (ag ? "Agent settings payload initialised" : "no Agent settings payload initialised"), "", "")
+  }
+}
+AWKEOF
+  { /usr/bin/awk -f "$cm" -f "$ma" "$f"; [[ -s "$inst" ]] && /usr/bin/awk -f "$cm" -f "$ia" "$inst"; [[ -s "$hubf" ]] && /usr/bin/awk -f "$cm" -f "$ha" "$hubf"; } 2>/dev/null | /usr/bin/sort -n -s -t'|' -k1,1 > "$all"
   if ! /usr/bin/grep -qF -e '|REQ|' -e '|LOCAL|' "$all"; then print "    (no MDM server requests in the log window)"; return 0; fi
   MDM_HAVE=1
+  HUB_HAVE=$(/usr/bin/awk -F'|' '$4 ~ /^HUB/ { c++ } END { print c + 0 }' "$all")
+  HUB_MODS=$(/usr/bin/awk -F'|' '$4 == "HUBMOD" { st[$6] = $5 } END { for (m in st) print m "=" st[m] }' "$all" | /usr/bin/sort)
+  HUB_PROF_N=$(/usr/bin/awk -F'|' '$4 == "HUBCMD" && $5 == "Install Profile Command" { c++ } END { print c + 0 }' "$all")
+  HUB_PROF_AGENT_N=$(/usr/bin/awk -F'|' '$4 == "HUBCMD" && $5 == "Install Profile Command" && $6 ~ /^Agent settings payload initialised/ { c++ } END { print c + 0 }' "$all")
+  HUB_PROF_OTHER_N=$(( HUB_PROF_N - HUB_PROF_AGENT_N ))
+  HUB_PROF_OTHER_UTC=$(/usr/bin/awk -F'|' '$4 == "HUBCMD" && $5 == "Install Profile Command" && $6 !~ /^Agent settings payload initialised/ { printf "%s%s", (c++ ? ", " : ""), $2 }' "$all")
+  hl=$(/usr/bin/awk -F'|' '$4 == "HUBREG" && $5 ~ /^Hub found the MDM profile/ { print $1 "|" $2; exit }' "$all")
+  [[ -n "$hl" ]] && IFS='|' read -r HUB_REG_EP HUB_REG_UTC <<< "$hl"
   line=$(/usr/bin/awk -F'|' '$4 == "LOCAL" && $6 ~ /SetupAssistant/ { print; exit }' "$all")   # the earliest ADE enrollment made in Setup Assistant
   if [[ -n "$line" ]]; then
     IFS='|' read -r E_ep E_utc MDM_ENROLL _k _l _d _r _s <<< "$line"
@@ -755,12 +788,13 @@ AWKEOF
     while IFS='|' read -r ep utc ts kind label detail result sig; do
       [[ "$kind" == LOCAL && "$ts" == "$MDM_ENROLL" ]] && continue
       [[ "$detail" == *"source ManagedSettings"* ]] && continue
+      [[ "$kind" == HUBMOD ]] && continue   # Hub's module lines feed the UEM conditions, not the timeline
       sso=0; [[ "$kind" == REQ && "$label" == InstallProfile ]] && is_sso_profile_name "$detail" && sso=1
       appcmd=0; [[ "$kind" == REQ && ( "$label" == InstallApplication* || "$label" == InstallEnterpriseApplication* ) ]] && appcmd=1
       isq=0   # an inventory poll (the server asking the Mac for a list or status) is not delivery; UEM sends one every few minutes
       if [[ "$kind" == REQ ]]; then case "$label" in *List|*Info|*Information|*Status|Restrictions|AvailableOSUpdates) isq=1 ;; esac; fi
       if (( released )); then   # after the release only app installs, app-install commands and the SSO profile still matter
-        [[ "$kind" == INSTREQ || "$kind" == INSTALLED || "$sso" == 1 || "$appcmd" == 1 ]] || continue
+        [[ "$kind" == INSTREQ || "$kind" == INSTALLED || "$kind" == HUBCMD || "$kind" == HUBREG || "$sso" == 1 || "$appcmd" == 1 ]] || continue
       fi
       (( appcmd )) && cmdq+="${ep} "
       if (( ! released )) && [[ ( "$kind" == REQ && "$isq" == 0 ) || "$kind" == INSTREQ ]]; then   # delivery activity: a delivery command, or an MDM-managed install it started
@@ -790,6 +824,8 @@ AWKEOF
           txt="(on the Mac) $label ($detail)"; [[ -n "$result" ]] && txt="$txt: $result"; txt="${txt}${note}"
           [[ -n "$sig" ]] && pkg_list+="${sig}|${utc}|${ep}|${result}"$'\n' ;;
         INSTALLED) txt="(on the Mac) $label: $detail"; (( released )) || inst_list+="${detail}|${utc}|${ep}"$'\n' ;;
+        HUBCMD) txt="(Hub agent channel) $label${detail:+: $detail}" ;;
+        HUBREG) txt="(Hub) $label" ;;
         *) txt="(on the Mac) $label: $detail" ;;
       esac
       if (( shown < 120 )); then
@@ -803,6 +839,13 @@ AWKEOF
     elif (( n_inst > 0 )); then MDM_INST_SUMMARY="${n_inst} MDM-managed install(s) started; this slice has no app-install command lines, so they cannot be matched to server commands"; fi
     [[ -n "$MDM_INST_SUMMARY" ]] && print "    App installs: ${MDM_INST_SUMMARY}."
     (( sso_ep )) && { MDM_SSO_DELAY=$(( sso_ep - E_ep )); MDM_SSO_UTC="$sso_utc"; }
+    (( sso_ep && dc_ep )) && MDM_SSO_VS_RELEASE=$(( dc_ep - sso_ep ))   # positive: the SSO profile was installed before DeviceConfigured; negative: after it
+    MDM_ENROLL_EP=$E_ep; MDM_REL_EP=$dc_ep; MDM_REL_UTC="$dc_utc"; MDM_SSO_EP=$sso_ep
+    hl=$(/usr/bin/awk -F'|' -v r="$dc_ep" '$4 == "REQ" && $5 == "InstallProfile" && $6 != "" { if ($1 + 0 <= r + 0) seen[$6] = 1; else if (!($6 in seen)) { print $1 "|" $2; exit } }' "$all")
+    (( dc_ep )) && [[ -n "$hl" ]] && IFS='|' read -r MDM_WAVE2_EP MDM_WAVE2_UTC <<< "$hl"   # the first profile that had not been delivered before Setup Assistant was released (a re-send of an earlier profile does not count)
+    MDM_POLL_N=$(/usr/bin/awk -F'|' -v a="$E_ep" -v b="$(( E_ep + 7200 ))" '$4 == "REQ" && $5 == "InstalledApplicationList" && $1 + 0 >= a + 0 && $1 + 0 <= b + 0 { c++ } END { print c + 0 }' "$all")
+    hl=$(/usr/bin/awk -F'|' -v a="$E_ep" -v b="$(( E_ep + 7200 ))" '$4 == "REQ" && $5 == "InstalledApplicationList" && $1 + 0 >= a + 0 && $1 + 0 <= b + 0 { n++; if (n > 1) printf "%d\n", $1 - prev; prev = $1 }' "$all")
+    MDM_POLL_GAPS=$(print -r -- "$hl" | /usr/bin/head -6 | while read -r g; do [[ -n "$g" ]] && print -r -- "$(fmt_dur $g)"; done | /usr/bin/paste -sd, - | /usr/bin/sed 's/,/, /g')
     if (( sso_ep == 0 )); then MDM_SSO_ORDER="the SSO profile's install was not seen in this window; DeviceConfigured $( (( dc_ep )) && print 'was seen' || print 'was not seen')"
     elif (( dc_ep == 0 )); then MDM_SSO_ORDER="the SSO profile was installed at ${sso_utc}; DeviceConfigured was not seen in the log window"
     elif (( sso_ep <= dc_ep )); then MDM_SSO_ORDER="the SSO profile was installed $(fmt_dur $(( dc_ep - sso_ep ))) before DeviceConfigured (${sso_utc} and ${dc_utc})"
@@ -815,6 +858,7 @@ AWKEOF
     fi
     MDM_PKG_REPEATS=$(print -r -- "$pkg_list" | /usr/bin/awk -F'|' 'NF >= 4 { if (!($1 in last) || $3 - last[$1] >= 60) { n[$1]++; t[$1] = (t[$1] == "" ? $2 : t[$1] ", " $2); d[$1] = $4 } last[$1] = $3 } END { for (k in n) if (n[k] > 1) printf "%s%s ran %d times (%s)", (c++ ? "; " : ""), d[k], n[k], t[k] }')
     [[ -n "$MDM_PKG_REPEATS" ]] && print "    The same MDM-managed installer package ran more than once: ${MDM_PKG_REPEATS}."
+    MDM_PKG_GAP=$(print -r -- "$pkg_list" | /usr/bin/awk -F'|' 'NF >= 4 { if (($1 in last) && $3 - last[$1] >= 60 && !done) { print $3 - last[$1]; done = 1 } last[$1] = $3 }')
   else
     print "    (no ADE enrollment from Setup Assistant in this log window; the most recent server requests follow. Use --log-window to reach further back.)"
     /usr/bin/awk -F'|' '$4 == "REQ"' "$all" | /usr/bin/tail -20 > "$win"
@@ -859,7 +903,7 @@ is_sso_profile_name() {   # <profile name as logged, with its /V_n suffix> -> su
   else [[ "$1" == *SSO* ]]; fi
 }
 
-split_heavy_files() {   # move the large archives (sysdiagnose, Hub archive) out of the bundle so the main zip stays small enough to send
+split_heavy_files() {   # move the Apple sysdiagnose, the one very large file, out of the bundle so the main zip stays small enough to send; nothing else moves
   local src rel dir base sz sha
   HEAVY_ROOT="$STAGE/heavy"; HEAVY_WORK="$HEAVY_ROOT/$BUNDLE"; HEAVY_LIST=""
   while IFS= read -r src; do
@@ -870,8 +914,127 @@ split_heavy_files() {   # move the large archives (sysdiagnose, Hub archive) out
     sz=$(/usr/bin/stat -f '%z' "$HEAVY_WORK/$rel" 2>/dev/null); sha=$(/usr/bin/shasum -a 256 "$HEAVY_WORK/$rel" 2>/dev/null | /usr/bin/awk '{ print $1 }')
     HEAVY_LIST+="${rel}|${sz}|${sha}"$'\n'
     print -r -- "${base}  ${sz} bytes  SHA-256 ${sha}  ($( (( LIGHT_ONLY )) && print 'not kept: --light-only' || print "moved to ${BUNDLE}-${RESULT_CODE}-heavy.zip, same folder path"))" >> "$WORK/$dir/MOVED-TO-HEAVY-ZIP.txt"
-  done <<< "$( { /usr/bin/find "$D1" -maxdepth 1 -type f -name 'sysdiagnose_*' 2>/dev/null; /usr/bin/find "$D5/hubcli-archive" -type f 2>/dev/null; } )"
+  done <<< "$(/usr/bin/find "$D1" -maxdepth 1 -type f -name 'sysdiagnose_*' 2>/dev/null)"
   [[ -n "$HEAVY_LIST" ]] && print -r -- "$HEAVY_LIST" | /usr/bin/awk -F'|' 'NF >= 3 { print $2 "  " $1 "  SHA-256 " $3 }' > "$HEAVY_WORK/MANIFEST-heavy.txt"
+  return 0
+}
+
+check_sso_setup_assistant() {   # the payload asks for registration during Setup Assistant: was the SSO profile on the Mac before the MDM released Setup Assistant?
+  local p reg await found=0 ef="$D3/profiles-show-enrollment.txt"
+  [[ -s "$FLAT" ]] || return 0
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    reg=$(flat_val "$p" PlatformSSO.EnableRegistrationDuringSetup)
+    [[ "$reg" == true || "$reg" == 1 ]] && found=1
+  done <<< "$(sso_prefixes)"
+  (( found )) || return 0
+  await=$(/usr/bin/awk '/AwaitDeviceConfigured/ { gsub(/[^0-9]/, "", $NF); print $NF; exit }' "$ef" 2>/dev/null)
+  if [[ "$await" == 0 ]]; then
+    vcheck WARN mdm-sso-before-release "the payload sets EnableRegistrationDuringSetup = true, but the enrollment profile has AwaitDeviceConfigured = 0, so Setup Assistant does not wait for the MDM and can finish before the SSO profile arrives"
+  fi
+  (( MDM_HAVE )) && [[ -n "$MDM_ENROLL" ]] || return 0
+  if [[ -z "$MDM_SSO_VS_RELEASE" ]]; then
+    if (( MDM_SSO_DELAY < 0 )); then
+      vcheck INFO mdm-sso-before-release "the payload sets EnableRegistrationDuringSetup = true, but no SSO profile install was seen after the ADE enrollment in this log window, so its order against DeviceConfigured cannot be told"
+    else
+      vcheck INFO mdm-sso-before-release "the payload sets EnableRegistrationDuringSetup = true and the SSO profile was installed at ${MDM_SSO_UTC}, but DeviceConfigured was not seen in the log window, so the order cannot be told"
+    fi
+  elif (( MDM_SSO_VS_RELEASE >= 0 )); then
+    vcheck PASS mdm-sso-before-release "the payload sets EnableRegistrationDuringSetup = true and the SSO profile was installed $(fmt_dur $MDM_SSO_VS_RELEASE) before DeviceConfigured, so it was already on the Mac when Setup Assistant was released"
+  else
+    vcheck WARN mdm-sso-before-release "the payload sets EnableRegistrationDuringSetup = true, but the SSO profile was installed $(fmt_dur $(( 0 - MDM_SSO_VS_RELEASE ))) AFTER DeviceConfigured. Setup Assistant had already been released, so it could not run Platform SSO; registration came from the normal prompt afterwards"
+  fi
+}
+
+check_ade_profile() {   # what the ADE profile on this Mac says: its ID and the settings that matter to Setup Assistant (this Mac only; UEM's own Platform SSO setting for it is not visible here)
+  local f="$D3/profiles-show-enrollment.txt" id host await auto sup man skipn bio
+  [[ -s "$f" ]] || return 0
+  id=$(/usr/bin/grep -oE 'depid=[0-9A-Fa-f-]+' "$f" | /usr/bin/head -1 | /usr/bin/sed 's/depid=//')
+  [[ -n "$id" ]] || return 0
+  host=$(/usr/bin/grep -oE 'https?://[^/ "]+' "$f" | /usr/bin/head -1 | /usr/bin/sed -E 's#https?://##')
+  await=$(/usr/bin/awk '/AwaitDeviceConfigured/ { gsub(/[^0-9]/, "", $NF); print $NF; exit }' "$f")
+  auto=$(/usr/bin/awk '/AutoAdvanceSetup/ { gsub(/[^0-9]/, "", $NF); print $NF; exit }' "$f")
+  sup=$(/usr/bin/awk '/IsSupervised/ { gsub(/[^0-9]/, "", $NF); print $NF; exit }' "$f")
+  man=$(/usr/bin/awk '/IsMandatory/ { gsub(/[^0-9]/, "", $NF); print $NF; exit }' "$f")
+  skipn=$(/usr/bin/sed -n '/SkipSetup/,/);/p' "$f" | /usr/bin/grep -cE '^[[:space:]]+"?[A-Za-z0-9]+"?,?[[:space:]]*$')
+  bio=shown; /usr/bin/sed -n '/SkipSetup/,/);/p' "$f" | /usr/bin/grep -qE '(^|[^A-Za-z])Biometric([^A-Za-z]|$)' && bio=hidden
+  ADE_ID="$id"; ADE_HOST="$host"
+  vcheck INFO ade-profile "this Mac enrolled with ADE profile ${id}${host:+ through ${host}}: AwaitDeviceConfigured = ${await:-not set}, AutoAdvanceSetup = ${auto:-not set}, supervised = ${sup:-not set}, mandatory = ${man:-not set}, ${skipn} Setup Assistant panes skipped (Touch ID pane ${bio}). Check this ID against the ADE profile you meant to assign; the Mac cannot show UEM's own Platform SSO setting for it"
+}
+
+uem_conditions() {   # the conditions Omnissa is fixing in UEM console 2701: what this Mac's log can show about each (one-line checks, plus a block for the findings file)
+  local out="$STAGE/uem-conditions.txt" UEM_FIX="UEM console 2701" v1 f1 n1 v2 f2 n2 v3 f3 n3 f4 vi dsm pas onb d2 sso2 hp gp
+  UEM_COND_FILE=""; : > "$out"
+  (( PSSO_CFG )) || return 0
+  if [[ -z "$MDM_ENROLL" ]]; then
+    vcheck INFO uem-conditions "not evaluated: no ADE enrollment made in Setup Assistant was found in the log window, and these conditions concern the first minutes after an ADE enrollment (use --log-window to reach further back)"
+    return 0
+  fi
+  dsm=$(print -r -- "$HUB_MODS" | /usr/bin/awk -F= '$1 == "MacOsDesiredStateManagementFeatureFlag" { print $2 }')
+  pas=$(print -r -- "$HUB_MODS" | /usr/bin/awk -F= '$1 == "MacOSProfileAtScaleFeatureFlag" { print $2 }')
+  onb=$(print -r -- "$HUB_MODS" | /usr/bin/awk -F= '$1 == "MacOSOnboardingWorkflowFeatureFlag" { print $2 }')
+  n1=""; n2=""; n3=""
+  # --- 1. stale reconciliation status after ADE re-enrollment
+  if [[ -z "$MDM_SSO_VS_RELEASE" ]]; then v1="CANNOT TELL"; f1="DeviceConfigured or the SSO profile install is not in the log window (SSO profile: ${MDM_SSO_UTC:-not seen}; DeviceConfigured: ${MDM_REL_UTC:-not seen})"
+  elif (( MDM_SSO_VS_RELEASE >= 0 )); then v1="SIGNATURE ABSENT"; f1="the SSO profile was installed $(fmt_dur $MDM_SSO_VS_RELEASE) before DeviceConfigured, so the command order was as intended"
+  else
+    d2=""
+    if (( ${MDM_WAVE2_EP:-0} > 0 && ${HUB_REG_EP:-0} > 0 && MDM_WAVE2_EP >= HUB_REG_EP )); then d2="; the first profile that had not been delivered before the release arrived at ${MDM_WAVE2_UTC}, $(fmt_dur $(( MDM_WAVE2_EP - HUB_REG_EP ))) after Hub registered with UEM (${HUB_REG_UTC})"; fi
+    v1="SIGNATURE PRESENT"; f1="DeviceConfigured was sent $(fmt_dur $(( MDM_REL_EP - MDM_ENROLL_EP ))) after the ADE enrollment, and the SSO profile was installed $(fmt_dur $(( 0 - MDM_SSO_VS_RELEASE ))) after DeviceConfigured${d2}"
+    n1="The same pattern appears when the ADE profile this Mac received is not set up for PSSO during Setup Assistant (this Mac's ADE profile: ${ADE_ID:-Data unavailable}). Whether this serial was enrolled before, and that ADE profile's PSSO setting, are Data unavailable on the Mac: confirm both in UEM. It matches this condition only for a re-enrollment whose ADE profile is set up for PSSO."
+  fi
+  # --- 2. PSSO commands delivered to Intelligent Hub instead of Apple's MDM client
+  if [[ -n "$MDM_SSO_UTC" ]]; then sso2="the SSO profile reached Apple's MDM client at ${MDM_SSO_UTC}"; else sso2="the SSO profile never reached Apple's MDM client in the log window"; fi
+  if (( ${HUB_HAVE:-0} == 0 )); then v2="CANNOT TELL"; f2="the Hub agent-channel command lines are not in this log (log-show-hub-commands.txt is empty or missing: Hub may not be installed yet, or the log window does not reach the enrollment)"
+  elif (( ${HUB_PROF_N:-0} == 0 )); then v2="SIGNATURE ABSENT"; f2="Hub received no profile command on its agent channel in the log window; ${sso2}"
+  elif (( ${HUB_PROF_OTHER_N:-0} == 0 )); then v2="SIGNATURE ABSENT"; f2="Hub received ${HUB_PROF_N} profile command(s) on its agent channel (requestor com.airwatch.mac.agent) and each initialised the Agent settings payload, Hub's own settings; ${sso2}"
+  else
+    v2="PATTERN SEEN"; f2="Hub received ${HUB_PROF_OTHER_N} profile command(s) that did NOT initialise the Agent settings payload (${HUB_PROF_OTHER_UTC}); ${sso2}"
+    n2="Hub also receives other profile types on its agent channel, so a profile command without the Agent settings payload is a lead, not proof. It matters if the SSO profile did not reach Apple's MDM client. This pattern has not been checked against a confirmed case."
+  fi
+  # --- 3. PSSO retry creates a DSM override instead of an MDM command
+  if [[ -z "$HUB_MODS" ]]; then v3="CANNOT TELL"; f3="Hub's module lines are not in this log (Hub may not be installed yet, or the log window does not reach Hub's first sync)"
+  elif [[ "$dsm" != Enabling || "$pas" != Enabling ]]; then v3="NOT APPLICABLE"; f3="Hub logged its DSM module as ${dsm:-not logged} and its profile-at-scale module as ${pas:-not logged}; the condition needs both enabled"
+  elif (( ${MDM_SSO_DELAY:--1} >= 600 )); then v3="PATTERN SEEN"; f3="both modules are enabled and the SSO profile reached the Mac $(fmt_dur $MDM_SSO_DELAY) after the ADE enrollment"
+  elif (( ${MDM_SSO_DELAY:--1} >= 0 )); then v3="SIGNATURE ABSENT"; f3="both modules are enabled, but the SSO profile reached the Mac $(fmt_dur $MDM_SSO_DELAY) after the ADE enrollment, with no long stall"
+  elif (( ${MDM_REL_EP:-0} == 0 )); then v3="PATTERN SEEN"; f3="both modules are enabled, and neither the SSO profile nor DeviceConfigured was sent in the log window"
+  else v3="CANNOT TELL"; f3="both modules are enabled and DeviceConfigured was sent at ${MDM_REL_UTC}, but no SSO profile install was seen in the log window, so the Mac was not held on the Device Management screen"; fi
+  if [[ "$v3" == "PATTERN SEEN" ]]; then
+    n3="A stall like this also occurs when the ADE profile's PSSO App Bundle ID is the extension identifier instead of the app's bundle ID (for Company Portal, com.microsoft.CompanyPortalMac.ssoextension instead of com.microsoft.CompanyPortalMac): UEM then never sees the app it waits for and keeps re-sending it. The DSM override itself is Data unavailable on the Mac."
+  fi
+  # --- 4. On Demand profiles; and the onboarding intervals
+  if (( ${MDM_SSO_DELAY:--1} >= 0 )); then f4="Data unavailable: the Mac's profile data holds no assignment type (Auto or On Demand). What the log shows is that the SSO profile reached the Mac $(fmt_dur $MDM_SSO_DELAY) after the ADE enrollment"
+  else f4="Data unavailable: the Mac's profile data holds no assignment type (Auto or On Demand), and no SSO profile install was seen after the ADE enrollment in the log window"; fi
+  if (( ${MDM_POLL_N:-0} > 1 )); then hp="${MDM_POLL_N} InstalledApplicationList queries, spaced ${MDM_POLL_GAPS}"
+  elif (( ${MDM_POLL_N:-0} == 1 )); then hp="1 InstalledApplicationList query, so no spacing to measure"
+  else hp="no InstalledApplicationList query in the log window"; fi
+  if [[ -n "$MDM_PKG_GAP" ]]; then gp="the same installer package was re-sent after $(fmt_dur $MDM_PKG_GAP)"; else gp="no installer package was sent twice"; fi
+  vi="${UEM_FIX} sets the onboarding initial sample interval to 2 minutes and the installation retry interval to 5 minutes. Observed in this log: ${hp}; ${gp}."
+  vcheck INFO uem-condition-1-reconcile "${v1}: ${f1}"
+  vcheck INFO uem-condition-2-hub-channel "${v2}: ${f2}"
+  vcheck INFO uem-condition-3-dsm-retry "${v3}: ${f3}"
+  vcheck INFO uem-condition-4-on-demand "${f4}"
+  vcheck INFO uem-onboarding-intervals "${vi}"
+  {
+    print "[Known UEM conditions - Omnissa is fixing these in ${UEM_FIX}. A Mac log shows their symptoms and can rule them out; it cannot show UEM's own state, so a verdict is 'consistent with', never proof]"
+    print "  1. Stale reconciliation status after ADE re-enrollment -> ${v1}"
+    print "     The condition: UEM keeps the reconciliation status of the Mac's previous enrollment, so Platform SSO can check for assigned profiles before the new reconciliation finishes, find none, treat configuration as complete and queue DeviceConfigured before the PSSO profile is delivered; the SSO screen is skipped."
+    print "     This log: ${f1}"
+    [[ -n "$n1" ]] && print "     ${n1}"
+    print "  2. PSSO commands delivered to Intelligent Hub instead of Apple's MDM client -> ${v2}"
+    print "     The condition: the configuration orchestrator answers requests from both Apple's MDM client and Intelligent Hub (requestor com.airwatch.mac.agent), so a Hub request can receive the PSSO profile install command, acknowledge it and remove it from the queue without installing the profile."
+    print "     This log: ${f2}"
+    [[ -n "$n2" ]] && print "     ${n2}"
+    print "  3. PSSO retry creates a DSM override instead of an MDM command -> ${v3}"
+    print "     The condition: with macOS profile delivery at scale and DSM both enabled, a PSSO retry of the profile installation creates a DSM override; DSM actions are not delivered while device configuration is in progress, so the profile is never installed and the Mac stays on the Device Management screen indefinitely."
+    print "     This log: ${f3}"
+    print "     Hub's own modules are the Mac-side view of those two settings (mapping assumed, not confirmed): DSM = ${dsm:-not logged}, profile-at-scale = ${pas:-not logged}, onboarding workflow = ${onb:-not logged}."
+    [[ -n "$n3" ]] && print "     ${n3}"
+    print "  4. On Demand profiles add further delay to PSSO setup (${UEM_FIX} lists only Auto assigned profiles when PSSO is configured) -> DATA UNAVAILABLE"
+    print "     This log: ${f4}"
+    print "  Onboarding intervals: ${vi}"
+  } > "$out"
+  UEM_COND_FILE="$out"
   return 0
 }
 
@@ -1818,6 +1981,34 @@ prompt_counts() {   # -> "shown responded" from the registration timeline slice
   print "${a:-0} ${b:-0}"
 }
 
+works_line() {   # <label> <regex on the check name>: when any check matches, prints "ok|label|passed|total|" or "bad|label|passed|total|the names that did not pass"
+  /usr/bin/awk -F'|' -v re="$2" -v lab="$1" '$1 ~ /^(PASS|WARN|FAIL)$/ && $2 ~ re { t++; if ($1 == "PASS") p++; else b = b (b == "" ? "" : ", ") $2 } END { if (t) printf "%s|%s|%d|%d|%s\n", (p == t ? "ok" : "bad"), lab, p, t, b }' "$VAL"
+}
+
+works_summary() {   # for a Mac where registration did not happen: what is fine anyway (the checks that need no registration) and what needs attention; prints nothing for any other result
+  [[ "$RESULT_CODE" == NOT-REGISTERED ]] || return 0
+  local ln st lab np nt names ok="" att=""
+  while IFS= read -r ln; do
+    [[ -z "$ln" ]] && continue
+    IFS='|' read -r st lab np nt names <<< "$ln"
+    [[ "$st" == ok ]] && ok+="  OK    ${lab}: ${np} of ${nt}"$'\n'
+  done <<< "$(works_line 'sign-in and Apple server URLs reachable from this Mac' '^redirect-url:')
+$(works_line "Apple's associated-domains servers reachable and not intercepted" '^apple-cdn-tls:')
+$(works_line 'Microsoft sign-in endpoint answers over https without interception' '^signin-openid$')
+$(works_line 'the extension is installed on this Mac' '^extension-installed$')
+$(works_line 'domains approved for the extension by macOS' '^domain-association:')
+$(works_line 'domains whose AASA files list the extension' '^aasa-')
+$(works_line 'clock in step with Apple time' '^clock-skew$')"
+  att=$(/usr/bin/awk -F'|' '($1 == "FAIL" || $1 == "WARN") && $2 != "device-registration" { d = $3; if (length(d) > 150) d = substr(d, 1, 150) "..."; printf "  %-5s %s: %s\n", $1, $2, d }' "$VAL")
+  print -r -- "WHAT WORKS (these checks do not need Platform SSO to be registered)"
+  if [[ -n "$ok" ]]; then print -r -- "${ok%$'\n'}"; else print "  (none of them could pass or run; read the lines below)"; fi
+  print ""
+  print "NEEDS ATTENTION"
+  print -r -- "  FAIL  Platform SSO is not registered on this Mac. ${RESULT_WHY}"
+  [[ -n "$att" ]] && print -r -- "$att"
+  return 0
+}
+
 compute_result() {   # sets RESULT_CODE and RESULT_LINE (one plain sentence) and RESULT_WHY (one more sentence)
   local nfail nwarn has_cfg=0 has_krb=0 krb_realm="" e2 r2 nkf nkw nkp nother p outcome LA_TIME shown responded lastlogin
   nfail=$(/usr/bin/grep -c '^FAIL|' "$VAL" 2>/dev/null); nwarn=$(/usr/bin/grep -c '^WARN|' "$VAL" 2>/dev/null)
@@ -1883,6 +2074,11 @@ build_diagnosis() {   # prints only; reads $VAL and the logs. Plain sentences: w
     dx "Setup Assistant waited a long time for the MDM server after this Mac enrolled." \
        "With Await Configuration on, Setup Assistant holds the Mac until the MDM server sends DeviceConfigured, and Apple documents no timeout, so a long wait is normally the server not sending, not the Mac, unless an app was still downloading or installing. Platform SSO is not involved until its profile arrives." \
        "Open this device's command queue in your MDM console for the times in the mdm-setup-gap and mdm-sso-profile-delay lines and see what was pending or sent twice, and what the server was waiting for (for example an app it did not see as installed). The MDM command and app install timeline in the findings lists every command the Mac received and every app it installed.${hint}"
+  fi
+  if vhas 'WARN\|mdm-sso-before-release'; then
+    dx "Setup Assistant was released before the SSO profile was on this Mac, so Platform SSO could not run inside it." \
+       "The payload asks for registration during Setup Assistant (EnableRegistrationDuringSetup = true), but that only works when the SSO profile is installed before the MDM sends DeviceConfigured and releases the Mac. Here the profile arrived later, so macOS registered the Mac from its normal prompt after Setup Assistant instead. The Mac only reports what the server sent and when; it cannot show why the server released it first." \
+       "Look at the ADE profile this Mac enrolled with (the ade-profile line gives its ID and settings): Platform SSO during Setup Assistant has to be set up in it, with this SSO profile and its extension app. A profile that reaches the Mac through ordinary assignment can arrive after the release. Also check the command queue or event log for this device around the times in the mdm-sso-before-release line."
   fi
   rf=$(/usr/bin/grep -E '^FAIL\|redirect-url:' "$VAL" 2>/dev/null | /usr/bin/grep -v '^FAIL|redirect-url:apple:')
   af=$(/usr/bin/grep -E '^FAIL\|(domain-association|aasa-origin|aasa-cdn):' "$VAL" 2>/dev/null | /usr/bin/grep -vE '^FAIL\|aasa-cdn:[^|]*\|Apple CDN returned HTTP 000')
@@ -2019,6 +2215,7 @@ RURL_MS_REQUIRED=(https://login.microsoftonline.com https://login.microsoft.com 
 RURL_MS_OPTIONAL=(https://login.partner.microsoftonline.cn https://login.chinacloudapi.cn https://login.microsoftonline.us https://login-us.microsoftonline.com)
 RURL_OKTA_PATHS=(/device-access/api/v1/nonce /oauth2/v1/token /v1/auth/device-sign)
 RURL_HUB_PATH=/mpsso
+FLAT_RE='(\.PayloadType$|\.ExtensionIdentifier$|\.TeamIdentifier$|\.Type$|\.Realm$|\.Hosts\[|\.URLs\[|\.PlatformSSO\.|\.ExtensionData\.|OktaVerify\.|\.AuthenticationMethod$|\.ProfileDisplayName$|\.ProfileInstallDate$)'   # the plist keys the SSO checks read; one definition for the early URL tests and for section 06
 ENROLL_INSTALL_DATE=""
 RURL_APPLE_HOSTS=(https://app-site-association.cdn-apple.com https://app-site-association.networking.apple)
 RURL_PROXY_ARGS=(); RURL_PROXY_NOTE=""
@@ -2328,7 +2525,7 @@ run_redirect_url_tests() {   # needs STAGE; EXTRA_URLS optional. Returns 1 when 
   xml="$STAGE/early-profiles.xml"
   "$PROFILESBIN" show -all -output stdout-xml > "$xml" 2>/dev/null
   FLAT="$STAGE/ssoflat-early.txt"
-  plist_flat "$xml" '(\.PayloadType$|\.ExtensionIdentifier$|\.TeamIdentifier$|\.Type$|\.Realm$|\.Hosts\[|\.URLs\[|\.PlatformSSO\.|\.ExtensionData\.|OktaVerify\.|\.AuthenticationMethod$|\.ProfileDisplayName$|\.ProfileInstallDate$)' > "$FLAT"
+  plist_flat "$xml" "$FLAT_RE" > "$FLAT"
   detect_enrollment_date
   rurl_load_payloads
   vendors=$(/usr/bin/awk -F'|' '{ print $1 }' "$RURL_TABLE" | /usr/bin/sort -u)
@@ -2557,10 +2754,12 @@ check_payload_vs_device() {   # needs XMLP S_STATE EXT_ID TEAM_ID CONSOLE_USER D
     vcheck SKIP payload-extension-identity "the profiles output has no Extensible SSO settings to compare"
   elif (( ! PSSO_CFG )); then
     vcheck SKIP payload-extension-identity "no Platform SSO configuration on this Mac: the installed SSO payload(s) are credential extensions (for example Kerberos), which macOS does not load as a Platform SSO extension"
-  elif print -r -- "$p_ext" | /usr/bin/grep -qxF "$EXT_ID" && { [[ -z "$p_team" || -z "$TEAM_ID" ]] || print -r -- "$p_team" | /usr/bin/grep -qxF "$TEAM_ID"; }; then
-    vcheck PASS payload-extension-identity "the payload names $EXT_ID (team ${TEAM_ID:-?}), the extension macOS loaded"
+  elif (( REG_NONE )); then
+    vcheck SKIP payload-extension-identity "skipped because Platform SSO is not registered on this Mac: no extension is loaded yet to compare with the payload"
+  elif print -r -- "$p_ext" | /usr/bin/grep -qxF "$LOADED_EXT_ID" && { [[ -z "$p_team" || -z "$TEAM_ID" ]] || print -r -- "$p_team" | /usr/bin/grep -qxF "$TEAM_ID"; }; then
+    vcheck PASS payload-extension-identity "the payload names $LOADED_EXT_ID (team ${TEAM_ID:-?}), the extension macOS loaded"
   else
-    vcheck FAIL payload-extension-identity "the payload names [$(print -r -- "$p_ext" | /usr/bin/tr '\n' ' ')] (team [$(print -r -- "$p_team" | /usr/bin/tr '\n' ' ')]) but the loaded extension is ${EXT_ID:-none} (team ${TEAM_ID:-?})"
+    vcheck FAIL payload-extension-identity "the payload names [$(print -r -- "$p_ext" | /usr/bin/tr '\n' ' ')] (team [$(print -r -- "$p_team" | /usr/bin/tr '\n' ' ')]) but the loaded extension is ${LOADED_EXT_ID:-none} (team ${TEAM_ID:-?})"
   fi
   # 2. authentication method in the payload vs the login type the device registered with
   p_am=$(xml_nested_value "$x" PlatformSSO AuthenticationMethod)
@@ -2949,6 +3148,10 @@ capture "$D5/log-show-hub.txt" \
         /usr/bin/log show --info --debug --style compact --last "$LOG_WINDOW" --predicate "$PRED_HUB"
 capture "$D5/log-show-hub-health-with-tz.txt" \
         /usr/bin/log show --info --debug --style default --last "$LOG_WINDOW" --predicate '(eventMessage CONTAINS "platformSSO") AND (eventMessage CONTAINS "health")'
+# the commands Hub received on its own agent channel (a PSSO command delivered here instead of to Apple's MDM client is UEM condition 2), plus Hub's module and registration markers
+PRED_HUBCMD='process == "hubd" AND (eventMessage CONTAINS "Install Profile Command" OR eventMessage CONTAINS "Install Application Command" OR eventMessage CONTAINS "Init profile for Agent settings payload" OR eventMessage CONTAINS "Command received with type" OR eventMessage CONTAINS "Deleting command entry from profile_module_commands" OR eventMessage CONTAINS "MDM profile installed" OR eventMessage CONTAINS "is added to enrolled user group" OR eventMessage CONTAINS "Enabling module: " OR eventMessage CONTAINS "Disabling module: ")'
+capture "$D5/log-show-hub-commands.txt" \
+        /usr/bin/log show --info --debug --style default --last "$MDM_LOG_WINDOW" --predicate "$PRED_HUBCMD"
 for f in "$D5"/log-show-*.txt; do redact_log_secrets "$f"; done
 log "  OAuth code/token URL parameters in Hub log slices redacted (hubcli archive + sysdiagnose are NOT redacted)"
 
@@ -2959,7 +3162,7 @@ log "== 06 validation tests (automated)"
 S_STATE="$D2/app-sso-platform-state.txt"
 XMLP="$D3/profiles-show-all-xml.txt"
 FLAT="$STAGE/ssoflat.txt"
-plist_flat "$XMLP" '(\.PayloadType$|\.ExtensionIdentifier$|\.TeamIdentifier$|\.Type$|\.Realm$|\.Hosts\[|\.URLs\[|\.PlatformSSO\.|\.ExtensionData\.|OktaVerify\.|\.AuthenticationMethod$|\.ProfileDisplayName$|\.ProfileInstallDate$)' > "$FLAT"
+plist_flat "$XMLP" "$FLAT_RE" > "$FLAT"
 SSO_PROFILE_BASES=$(sso_prefixes | while IFS= read -r p; do pp="${p%%.ProfileItems*}"; n=$(flat_val "$pp" ProfileDisplayName); [[ -n "$n" ]] && print -r -- "${n%%/V_[0-9]*}"; done | /usr/bin/sort -u)   # the profiles that carry an Extensible SSO payload, without their /V_n suffix
 VAL="$STAGE/validation.txt"; : > "$VAL"; UNRESOLVED_HOSTS=""
 if [[ -s "$RURL_Q" ]]; then   # the Redirect URL tests ran first; their results join the list
@@ -2974,7 +3177,7 @@ case "$AWAIT" in
   0) vcheck INFO mdm-await-configuration "the enrollment profile has AwaitDeviceConfigured = 0: Setup Assistant does not wait for the MDM server" ;;
 esac
 MDM_TL="$STAGE/mdm-command-timeline.txt"
-mdm_command_timeline "$D3/log-show-mdm-commands.txt" "$D3/install-log-events.txt" > "$MDM_TL"
+mdm_command_timeline "$D3/log-show-mdm-commands.txt" "$D3/install-log-events.txt" "$D5/log-show-hub-commands.txt" > "$MDM_TL"
 if (( MDM_HAVE )) && [[ -n "$MDM_ENROLL" ]]; then
   if (( MDM_GAP_MAX >= 600 )); then
     vcheck WARN mdm-setup-gap "after the ADE enrollment in Setup Assistant ($(stamp_utc "$MDM_ENROLL")) the MDM server sent no delivery command (a profile or app install) for $(fmt_dur $MDM_GAP_MAX) (from ${MDM_GAP_FROM} to ${MDM_GAP_TO}), and $(fmt_dur $MDM_SPAN) passed from enrollment to its last delivery activity; ${MDM_N_DELIV} delivery command(s) and ${MDM_N_QRY} inventory poll(s) in all, ${MDM_N_APP} of the commands app installs$( [[ -n "$MDM_REPEATS" ]] && print "; installed more than once: ${MDM_REPEATS}")$( [[ -n "$MDM_PKG_REPEATS" ]] && print "; same installer package ran again: ${MDM_PKG_REPEATS}"); ${MDM_SSO_ORDER}. A long app download or install can explain a gap like this; if none was running, the server was waiting on something and not sending"
@@ -2990,6 +3193,9 @@ if (( MDM_HAVE )) && [[ -n "$MDM_ENROLL" ]]; then
   fi
   (( MDM_N_NOTNOW > 0 )) && vcheck INFO mdm-notnow "${MDM_N_NOTNOW} command(s) were answered NotNow (the Mac told the server to retry later) while in Setup Assistant"
 fi
+check_sso_setup_assistant
+check_ade_profile
+uem_conditions
 
 # --- time zone: a Mac in Setup Assistant starts on a default zone and later switches, so raw clock times jump; record when
 time_zone_report "$D4/log-show-registration-timeline-with-tz.txt" "$D3/log-show-mdm-commands.txt" "$D3/log-show-mdm-profile-install.txt"
@@ -3018,19 +3224,34 @@ elif [[ "$REG" == true ]]; then vcheck PASS device-registration "registrationCom
 else vcheck FAIL device-registration "registrationCompleted = ${REG:-<missing>} - Platform SSO is not registered on this Mac"; fi
 
 UST=$(state_val state)
+NKEYS=0
+for k in _deviceSigningKeyData _deviceEncryptionKeyData; do /usr/bin/grep -q "\"$k\"" "$S_STATE" 2>/dev/null && NKEYS=$(( NKEYS + 1 )); done
+LOADED_EXT_ID="$EXT_ID"; EXT_FROM_PAYLOAD=0; REG_NONE=0
+# REG_NONE: clear evidence that nothing registered: the state was read without error and holds no extension, no device keys and no user
+if (( PSSO_CFG )) && [[ "$REG" != true && -z "$UST" && -z "$LOADED_EXT_ID" ]] && (( NKEYS == 0 )) && /usr/bin/grep -q '^# ---- exit code: 0' "$S_STATE" 2>/dev/null; then REG_NONE=1; fi
+if (( PSSO_CFG )) && [[ -z "$EXT_ID" ]]; then   # nothing is loaded yet: the association, extension and network checks use the extension the Platform SSO payload names
+  FB_ID=$(sso_prefixes | while IFS= read -r p; do [[ -n "$(flat_get "$p" | /usr/bin/grep -m1 '^PlatformSSO\.')" ]] && print -r -- "$(flat_val "$p" ExtensionIdentifier)|$(flat_val "$p" TeamIdentifier)"; done | /usr/bin/sort -u)
+  if [[ -n "$FB_ID" && "$(print -r -- "$FB_ID" | /usr/bin/grep -c .)" == 1 ]]; then
+    IFS='|' read -r FB_EXT FB_TEAM <<< "$FB_ID"
+    if [[ -n "$FB_EXT" ]]; then
+      EXT_ID="$FB_EXT"; TEAM_ID="$FB_TEAM"; EXT_FROM_PAYLOAD=1
+      vcheck INFO extension-team "no extension is loaded because Platform SSO has not registered; the association, extension and network checks use the extension the SSO payload names ($EXT_ID, team ${TEAM_ID:-not named})"
+    fi
+  fi
+fi
 if (( ! PSSO_CFG )); then vcheck SKIP user-registration "no Platform SSO configuration on this Mac, so no user registration is expected"
+elif (( REG_NONE )); then vcheck SKIP user-registration "skipped because Platform SSO is not registered on this Mac: without a device registration there is no user to check"
 elif [[ -z "$UST" ]]; then vcheck FAIL user-registration "no user configuration in the state - no user is registered"
 elif [[ "$UST" == *Normal* ]]; then vcheck PASS user-registration "user state = $UST"
 else vcheck FAIL user-registration "user state = $UST (expected POUserStateNormal)"; fi
 
 if [[ -z "$EXT_ID" ]] && (( ! PSSO_CFG )); then vcheck SKIP extension-installed "no Platform SSO configuration on this Mac, so no Platform SSO extension is expected"
 elif [[ -z "$EXT_ID" ]]; then vcheck SKIP extension-installed "no extensionIdentifier in the state (payload not applied?)"
-elif /usr/bin/grep -q -F "$EXT_ID" "$D2/pluginkit-all.txt" 2>/dev/null; then vcheck PASS extension-installed "$EXT_ID is registered with pluginkit"
-else vcheck FAIL extension-installed "$EXT_ID is not listed by pluginkit (host app missing or never launched?)"; fi
+elif /usr/bin/grep -q -F "$EXT_ID" "$D2/pluginkit-all.txt" 2>/dev/null; then vcheck PASS extension-installed "$EXT_ID is registered with pluginkit$( (( EXT_FROM_PAYLOAD )) && print ' (the extension the payload names; nothing is loaded yet)')"
+else vcheck FAIL extension-installed "$EXT_ID is not listed by pluginkit (host app missing or never launched?)$( (( EXT_FROM_PAYLOAD )) && print ' - this is the extension the payload names; nothing is loaded yet')"; fi
 
-NKEYS=0
-for k in _deviceSigningKeyData _deviceEncryptionKeyData; do /usr/bin/grep -q "\"$k\"" "$S_STATE" 2>/dev/null && NKEYS=$(( NKEYS + 1 )); done
 if (( ! PSSO_CFG )); then vcheck SKIP device-keys "no Platform SSO configuration on this Mac, so no device keys are expected"
+elif (( REG_NONE )); then vcheck SKIP device-keys "skipped because Platform SSO is not registered on this Mac, so no device keys exist yet"
 elif (( NKEYS == 2 )); then vcheck PASS device-keys "device signing and encryption keys are present"
 else vcheck FAIL device-keys "only ${NKEYS} of 2 device keys are present in the state"; fi
 LT=$(state_val loginType)
@@ -3120,6 +3341,7 @@ safari_session_end
 NF=$(/usr/bin/grep -c '^FAIL|' "$VAL"); NW=$(/usr/bin/grep -c '^WARN|' "$VAL")
 log "  validation finished: FAIL=${NF:-0} WARN=${NW:-0}"
 compute_result
+WORKS_TXT=$(works_summary); WORKS_BLOCK=""; [[ -n "$WORKS_TXT" ]] && WORKS_BLOCK=$'\n\n'"$WORKS_TXT"
 log "  RESULT: ${RESULT_CODE} - ${RESULT_LINE}"
 
 # =============================================================================
@@ -3132,6 +3354,7 @@ log "== quick findings"
   HH="$D5/log-show-hub.txt"
   print "RESULT: ${RESULT_LINE}"
   print "        ${RESULT_WHY}"
+  [[ -n "$WORKS_TXT" ]] && { print ""; print -r -- "$WORKS_TXT"; }
   print ""
   print "QUICK FINDINGS - automated greps only; confirm in the raw files"
   print "Generated: $(/bin/date -u '+%m-%d-%Y %H:%M:%S UTC') (device clock $(/bin/date '+%H:%M:%S %Z'))   Log window: $LOG_WINDOW$( [[ "$MDM_LOG_WINDOW" != "$LOG_WINDOW" ]] && print " (MDM and registration timeline slices: $MDM_LOG_WINDOW)")"
@@ -3185,8 +3408,12 @@ log "== quick findings"
   fi
   print ""
   if [[ -s "$MDM_TL" ]]; then
-    print "[MDM command timeline - what the MDM server asked this Mac to do (UTC converted from each line's own offset)]"
+    print "[MDM command timeline - what the MDM server asked this Mac to do, with the commands Intelligent Hub received on its agent channel (UTC converted from each line's own offset)]"
     /bin/cat "$MDM_TL"
+    print ""
+  fi
+  if [[ -s "${UEM_COND_FILE:-}" ]]; then
+    /bin/cat "$UEM_COND_FILE"
     print ""
   fi
 
@@ -3341,7 +3568,7 @@ Host: $HOST   macOS: $OS_VER   Console user: ${CONSOLE_USER:-none}   Log window:
 Zips: $PKG_NOTE
 Collected: $(/bin/date -u '+%m-%d-%Y %H:%M:%S UTC') (device clock $(/bin/date '+%H:%M:%S %Z')). Times the script writes are UTC. Raw log slices use the Mac's clock, some with an offset and some without; see the Times lines in Apple_PSSO_Configuration.txt.
 RESULT: ${RESULT_LINE}
-        ${RESULT_WHY}
+        ${RESULT_WHY}${WORKS_BLOCK}
 
 READ IN THIS ORDER
   1. Apple_PSSO_Configuration.txt   validation summary and quick findings first, then OS, timezone, hardware and packages
@@ -3363,7 +3590,7 @@ local-account files in folders 04 and 02. macOS masks loginUserName (b***n@domai
 argument as <private>; the exact full string typed into the IdP sign-in page is not in these logs.
 
 Privacy: logs contain usernames/UPNs/device identifiers. OAuth code/token URL parameters are redacted in the log slices,
-but hubcli's Hublogs.tar.gz and the sysdiagnose are NOT redacted (by default they are in the separate -heavy zip). Share on a need-to-know basis.
+but hubcli's Hublogs.tar.gz (in this zip) and the sysdiagnose (by default in the separate -heavy zip) are NOT redacted. Share on a need-to-know basis.
 EOF
 
 (( SINGLE_ZIP )) || split_heavy_files
@@ -3387,13 +3614,14 @@ if /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$WORK" "$ZIP"; then
       problem "could not create $HEAVY_ZIP (is the folder writable?)"
     fi
   elif [[ -n "${HEAVY_LIST:-}" ]]; then
-    HEAVY_MSG="The sysdiagnose and Hub archive were not kept (--light-only)"
+    HEAVY_MSG="The sysdiagnose was not kept (--light-only)"
   fi
   print ""
   print "DONE: $ZIP  ($(/usr/bin/du -h "$ZIP" | /usr/bin/awk '{print $1}'))"
   [[ -n "$HEAVY_MSG" ]] && print "      $HEAVY_MSG"
   print "RESULT: ${RESULT_LINE}"
   print "        ${RESULT_WHY}"
+  [[ -n "$WORKS_TXT" ]] && { print ""; print -r -- "$WORKS_TXT"; print ""; }
   if (( ${#NOTES} )); then print "Notes (informational):"; for n in "${NOTES[@]}"; do print "  - $n"; done; fi
   if (( ${#PROBLEMS} )); then
     print "Completed with ${#PROBLEMS} problem(s):"; for p in "${PROBLEMS[@]}"; do print "  - $p"; done
